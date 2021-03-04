@@ -154,21 +154,6 @@ class cLCTM:
     
     def mk_init_concepts(self, corpus, sample_size=0.1, method="random"):
         self.init_wordconcept = dict(zip(sample(unifs, len(unifs)), np.random.randint(0, self.n_concepts)))
-        if corpus.softmax:
-            self.conceptvecs = np.random.random(self.n_concepts)
-        else:
-            if isinstance(sample_size, float):
-                sample_size = int(corpus.n_docs()*sample_size)
-            assert isinstance(sample_size, int)
-            assert sample_size>0
-
-            sampled_docids = sample(range(corpus.n_docs()), sample_size)
-            sampled_vecs = np.concatenate(tuple(corpus.get_doc(sampled_docids)))
-
-            mu = sampled_vecs.flatten().mean()
-            sigma = sampled_vecs.flatten().std()
-
-            self.conceptvecs = np.random.normal(mu, sigma, self.n_concepts)
 
     def init_values(self, corpus):
         self.n_docs = corpus.n_docs()
