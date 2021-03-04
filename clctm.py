@@ -1,6 +1,7 @@
 # coding: utf-8
 
 import numpy as np
+from tqdm.auto import tqdm
 
 torchtf_avail = True
 try:
@@ -21,7 +22,7 @@ from itertools import chain
 from collections import Counter
 
 
-class cweCorpus:
+class Corpus:
     
     def __init__(
                 self,
@@ -130,6 +131,7 @@ class cLCTM:
         self.n_dims = n_dims
         self.alpha = alpha
         self.beta = beta
+        self.n_docs = 0
 
         # set count variables according to preset concept vectors, if that's what we have
         if concept_vectors is not None and n_concepts is None:
@@ -143,14 +145,17 @@ class cLCTM:
         # Worth mentioning that I do need the data, because word vectors are not bound
 
     def fit(self, corpus):
-        if self.init_concepts is not None:
-            init_concepts = self.init_concepts
+        assert isinstance(corpus, Corpus)
+        assert corpus.n_docs() > 0
 
-        self.init_values(corpus, init_concepts)
+        if self.init_concepts is None:
+            self.mk_init_concepts(
+        self.init_values(corpus)
     
     def mk_init_concepts(self, corpus, sample_size=0.1, method="random"):
+        self.init_wordconcept = dict(zip(sample(unifs, len(unifs)), np.random.randint(0, self.n_concepts)))
         if corpus.softmax:
-            self.init_concepts = dict(zip(sample(unifs, len(unifs)), np.random.randint(0, self.n_concepts)))
+            self.conceptvecs = np.random.random(self.n_concepts)
         else:
             if isinstance(sample_size, float):
                 sample_size = int(corpus.n_docs()*sample_size)
@@ -158,23 +163,32 @@ class cLCTM:
             assert sample_size>0
 
             sampled_docids = sample(range(corpus.n_docs()), sample_size)
-            sampled_vecs = 
+            sampled_vecs = np.concatenate(tuple(corpus.get_doc(sampled_docids)))
 
-    def init_values(self, corpus, init_concepts):
+            mu = sampled_vecs.flatten().mean()
+            sigma = sampled_vecs.flatten().std()
+
+            self.conceptvecs = np.random.normal(mu, sigma, self.n_concepts)
+
+    def init_values(self, corpus):
+        self.n_docs = corpus.n_docs()
         self.topics = []
         self.concepts = []
         self.n_z = Counter()
         self.n_c = Counter()
-        self.n_dz = np.zeros((len(corpus), self.n_topics), dtype=int)
+        self.n_dz = np.zeros((self.n_docs, self.n_topics), dtype=int)
         self.n_zc = np.zeros((self.n_topics, self.n_concepts), dtype=int)
         self.alpha_vec = self.alpha * np.ones(self.n_topics)
-        self.n_w = Counter(chain(*corpus))
-        self.sum_mu_s = np.zeros((self.n_concepts, self.n_dims))
+        self.n_w = Counter(chain(*corpus.input_ids))
+        self.wordconcept = dict(zip(self.n_w.keys(), 
+        self.sum_mu_c = np.zeros((self.n_concepts, self.n_dims))
 
-        for d, doc in enumerate(corpus):
-            topics = [randrange(self.n_topics) for w in doc]
-            concepts = [init_concepts[w] for w in doc]
-            vectors = self.cvmodel(torch.tensor([doc]))[0][0].detach().numpy()
+        for d, doc in enumerate(corpus.input_ids):
+            # topics = [randrange(self.n_topics) for w in doc]
+            topics = np.random.randint(0, self.n_topics, len(doc))
+            # concepts = [init_concepts[w] for w in doc]
+            concepts = np.vectorize(init_wordconcept.__getitem__)(doc)
+            vectors = corpus.get_doc(d)
             self.topics.append(topics)
             self.concepts.append(concepts)
 
@@ -185,9 +199,31 @@ class cLCTM:
                 self.n_dz[d, z] += count
             for (z, c), count in Counter(zip(topics,concepts)).items():
                 self.n_zc[z,c] += count
+            for c in set(concepts):
+               self.sum_mu_c[c] += vectors[concepts==c,:].sum(0)
         
         self.sum_words = sum(self.n_w.values())
 
+        # Init concepts
+        self.mu_c = np.zeros((self.n_dims, self.n_concepts))
+        self.sigma_c = np.zeros(self.n_concepts)
+        self.mu_c_dot_mu_c = np.zeros(self.n_concepts)
 
-    def :
+        for c in range(self.n_concepts):
+            self.mu_c[c], self.sigma_c[c] = self.calc_mu_sigma(c)
+            self.mu_c_dot_mu_c = np.inner(self.mu_c[c], self.mu_c[c])
+
+    def calc_mu_sigma(self, concept_idx):
+        z = concept_idx
+        var_inverse = self.noise/self.n_z[z] + 1/self.sigma_prior
+        sigma = noise + 1/var_inverse
+
+        c1 = self.n_z[z] + self.noise/self.sigma_prior
+        c2 = 1 + self.n_z[z] * (self.sigma_prior/self.noise)
+        mu = self.sum_mu_c[concept_id]/c1 + self.mu_prior/c2
+
+        return mu, sigma
+
+    def set_wv_priors(self):
+        
 
