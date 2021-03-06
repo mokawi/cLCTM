@@ -21,6 +21,7 @@ from random import randrange, shuffle, sample
 from itertools import chain
 from collections import Counter
 
+import logging
 
 class Corpus:
     
@@ -125,13 +126,21 @@ class cLCTM:
             conceptinitmethod="random",
             alpha=0.1,
             beta=0.01,
-            faster_heuristic=False      # Not implemented yet
+            noise=0.5,
+            n_iter=1500,
+            faster_heuristic=False,     # Not implemented yet
+            max_consec=100,
+            sampling_neighbors=300      # For sampling concepts
             ):
         self.n_topics = n_topics
         self.n_dims = n_dims
         self.alpha = alpha
         self.beta = beta
         self.n_docs = 0
+        self.noise = noise
+        self.nneighbors = sampling_neighbors
+        self.faster = faster_heuristic
+        self.max_consec = max_consec
 
         # set count variables according to preset concept vectors, if that's what we have
         if concept_vectors is not None and n_concepts is None:
@@ -159,14 +168,16 @@ class cLCTM:
         self.n_docs = corpus.n_docs()
         self.topics = []
         self.concepts = []
-        self.n_z = Counter()
-        self.n_c = Counter()
+        self.n_z = np.zeros(self.n_topics, dtype=int)
+        self.n_c = np.zeros(self.n_concepts, dtype=int)
         self.n_dz = np.zeros((self.n_docs, self.n_topics), dtype=int)
         self.n_zc = np.zeros((self.n_topics, self.n_concepts), dtype=int)
         self.alpha_vec = self.alpha * np.ones(self.n_topics)
         self.n_w = Counter(chain(*corpus.input_ids))
         self.wordconcept = dict(zip(self.n_w.keys(), 
         self.sum_mu_c = np.zeros((self.n_concepts, self.n_dims))
+
+        pb = tqdm.tqdm(desc="Initialize assignments", total=corpus.n_docs())
 
         for d, doc in enumerate(corpus.input_ids):
             # topics = [randrange(self.n_topics) for w in doc]
@@ -176,32 +187,49 @@ class cLCTM:
             vectors = corpus.get_doc(d)
             self.topics.append(topics)
             self.concepts.append(concepts)
+            
+            nzc = Counter(topics)
+            ncc = Counter(concepts)
+            self.n_z[list(nzc.keys())] = list(nxc.values())
+            self.n_c[list(ncc.keys())] = list(ncc.values())
 
-            self.n_z.update(topics)
-            self.n_c.update(concepts)
-
-            for z, count in Counter(topics).items():
+            for z, count in nzc.items():
                 self.n_dz[d, z] += count
             for (z, c), count in Counter(zip(topics,concepts)).items():
                 self.n_zc[z,c] += count
-            for c in set(concepts):
+            for c in ncc.keys():
                self.sum_mu_c[c] += vectors[concepts==c,:].sum(0)
+            
+            pb.update(1)
         
         self.sum_words = sum(self.n_w.values())
+        
+        # only useful for set_wv_priors, and at that point, sum_mu_c == sum_vectors
+        # so using sum_mu_c instead
+        # self.sum_vectors = self.sum_mu_c.copy()
+
+        self.set_wv_priors()
 
         # Init concepts
         self.mu_c = np.zeros((self.n_dims, self.n_concepts))
         self.sigma_c = np.zeros(self.n_concepts)
         self.mu_c_dot_mu_c = np.zeros(self.n_concepts)
 
-        for c in range(self.n_concepts):
+        for c in tqdm.trange(self.n_concepts, desc="Initialize concept vectors"):
             self.mu_c[c], self.sigma_c[c] = self.calc_mu_sigma(c)
             self.mu_c_dot_mu_c = np.inner(self.mu_c[c], self.mu_c[c])
+
+        # Stuff for "faster" heuristic
+        if self.faster:
+            self.consec_sampled_num = [
+                    [0] * len(d)
+                    for d in corpus.input_ids
+                ]
 
     def calc_mu_sigma(self, concept_idx):
         z = concept_idx
         var_inverse = self.noise/self.n_z[z] + 1/self.sigma_prior
-        sigma = noise + 1/var_inverse
+        sigma = self.noise + 1/var_inverse
 
         c1 = self.n_z[z] + self.noise/self.sigma_prior
         c2 = 1 + self.n_z[z] * (self.sigma_prior/self.noise)
@@ -209,6 +237,121 @@ class cLCTM:
 
         return mu, sigma
 
+    def calc_theta(self):
+        return (self.n_dz.T + self.alpha_vec)/(self.n_dz.sum(0) + self.alpha_vec.sum())
+    
+    def calc_pho(self):
+        return (self.n_zc + self.beta)/(self.n_zc.sum(0) + self.beta*self.n_concepts)
+
     def set_wv_priors(self):
+        # Double check this. Shouldn't it be a different denominator? E.g. number of words per concept.
+        #self.mu_prior = self.sum_mu_c / self.sum_words
+        # Alternatively, a per-concept count.
+        self.mu_prior = self.sum_mu_c / self.n_c
+
+        self.sigma_prior = 1.0 # Yes, this is kinda weird as well.
+
+        #TODO: double check this weird function
+
+    def infer(self, corpus):
+
+        def ghost_topic(d, z, c):
+            self.n_dz[d, z] -= 1
+            self.n_zc[z, c] -= 1
+            self.n_z[z] -= 1
         
+        def update_topic(d,z,c):
+            self.n_dz[d,z] += 1
+            self.n_zc[z,c] += 1
+            self.n_z[z] +=1
+
+        def ghost_concept(w, wvec, c, z):
+            self.sum_mu_c[c] -= wvec
+            self.n_c[c] -= 1
+            self.n_zc[z,c] -=1
+
+            self.mu_c[c], self.sigma_c[c] = self.calc_mu_sigma(c)
+            self.mu_c_dot_mu_c = np.inner(self.mu_c[c], self.mu_c[c])
+
+        def update_concept(w, wvec, c, z):
+            self.sum_mu_c[c] += wvec
+            self.n_c[c] += 1
+            self.n_zc[z,c] +=1
+
+            self.mu_c[c], self.sigma_c[c] = self.calc_mu_sigma(c)
+            self.mu_c_dot_mu_c = np.inner(self.mu_c[c], self.mu_c[c])
+
+        def sample_z(d, c):
+            c1 = (self. n_zc[:,c] + self.beta)/(self.n_z + self.beta * self.n_concepts)
+            c2 = self.n_dz[d] + self.alpha_vec
+            p = c1*c2
+            p = p/p.sum()
+)
+            return np.random.choice(list(range(self.n_topics)), p=p)
+
+        def softmax(v):
+            r = np.exp(v-v.max())
+            # .maxCoeff() effectively seems to be .max()
+            return r/r.sum()
+
+        def sample_c(w, wvec, z):
+            # NB: orig implementation reduced time here by creating "neighbor lists" for each
+            # token. Obviously, cwe change even when tokens are the same, so we can't do that
+            # here.
+            # TODO: check if it's still faster to pick closest concepts for each word token
+            # TODO: Make sure not using softmax is ok.
+            # TODO: (Maybe) check if derivation checks out? Pretty weird to me.
+            t1 = -0.5 * self.n_dims * np.log(self.sigma_c)
+            t2 = -(0.5 / self.sigma_c) * (self.mu_c_dot_mu_c - 2 * self.mu_c.T @ wvec)
+
+            prob = softmax(np.log(self.n_zc[:,c] + self.beta) + t1 + t2)
+
+            return np.random.choice(list(range(self.n_concepts)), p=prob)
+
+        pbg = tqdm.tqdm(total=self.n_iter, desc="Iterations")
+        pbdoc = tqdm.tqdm(total=self.n_docs, desc="Documents")
+       
+        for it in range(self.n_iter):
+            num_z_changed = 0
+            num_c_changed = 0
+            num_omit = 0
+
+            pbdoc.reset()
+            
+            for doc in range(self.n_docs):
+                
+                for w, wvec, z, c, i in zip(self.input_ids[doc], corpus.get_doc(doc), self.topics[doc], self.concepts[doc], range(len(self.input_ids[doc])):
+                    assert c>=0 and c<self.n_concepts
+                    assert z>=0 and z<self.n_topics
+                    
+                    # Draw new topic
+                    ghost_topic(doc, z, c)
+                    z_new = sample_z(doc, c)
+                    self.topics[doc, i] = z_new
+                    update_topic(doc, z, c)
+
+                    if z_new != z: num_z_changed += 1
+                    z = z_new
+
+                    if faster and self.consec_sampled_num[doc][i] > self.max_consec:
+                        num_omit +=1
+                        continue
+
+                    # Draw new concept
+                    ghost_concept(w, wvec, c, z)
+                    c_new = sample_c(w, wvec, z)
+                    self.concepts[doc, i] = c_new
+                    update_concept(w, wvec, c_new, z)
+
+                    if c != c_new:
+                        num_c_changed += 1
+
+                        if self.faster:
+                            self.consec_sampled_num[doc][i] = 0
+                    elif self.faster:
+                        self.consec_sampled_num[doc][i] += 1
+
+               pbdoc.update(1) 
+
+            pb.update(1)
 
