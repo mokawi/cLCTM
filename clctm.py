@@ -39,6 +39,8 @@ class Corpus:
         store_corpus: if True, then the corpus is converted to vectors, which are stored on disk, in a temporary
             folder.
 
+        softmax: Currently not in use. But maybe softmaxing vectors from BERT is useful? Dunno
+
         For the moment, though, static word embeddings are not implemented yet.
         """
 
@@ -92,9 +94,17 @@ class Corpus:
         self.unifs = set(chain(*self.input_ids))
 
     def n_docs(self):
+        "Returns the number of documents in the corpus"
+
         return len(self.input_ids)
 
     def get_doc(self, doc_idx):
+        """
+        Returns the vector for document at position <doc_idx>. If `doc_idx` is a list, tuple or
+        set of int, then it return the vectors for all those positions. Output is always a
+        numpy array.
+        """
+
         if doc_idx is None: doc_idx = tuple(range(self.n_docs()))
 
         if isinstance(doc_idx, int):
@@ -111,9 +121,16 @@ class Corpus:
                 yield r[i0:i0+len(self.input_ids[d])]
                 i0 += len(self.input_ids[d])
     
-    def get_docs(self):
-        for r in self.get_doc(range(self.n_docs())):
-            yield r
+    def get_docs(self, doc_ids=None):
+        """
+        Kinda like `get_doc`, but if no parameter is specified, it returns the vectors
+        for the whole corpus.
+        """
+        if doc_ids is None:
+            for r in self.get_doc(range(self.n_docs())):
+                yield r
+        else:
+            return self.get_doc(doc_ids)
 
 class cLCTM:
 
@@ -157,14 +174,12 @@ class cLCTM:
         assert isinstance(corpus, Corpus)
         assert corpus.n_docs() > 0
 
-        if self.init_concepts is None:
-            self.mk_init_concepts(
-        self.init_values(corpus)
-    
-    def mk_init_concepts(self, corpus, sample_size=0.1, method="random"):
-        self.init_wordconcept = dict(zip(sample(unifs, len(unifs)), np.random.randint(0, self.n_concepts)))
+        self._init_values(corpus)
+        self._infer(corpus)
 
-    def init_values(self, corpus):
+    def _init_values(self, corpus):
+
+        # Initialize a bunch of variables
         self.n_docs = corpus.n_docs()
         self.topics = []
         self.concepts = []
@@ -174,20 +189,23 @@ class cLCTM:
         self.n_zc = np.zeros((self.n_topics, self.n_concepts), dtype=int)
         self.alpha_vec = self.alpha * np.ones(self.n_topics)
         self.n_w = Counter(chain(*corpus.input_ids))
-        self.wordconcept = dict(zip(self.n_w.keys(), 
+        self.init_wordconcept = dict(zip(self.n_w.keys(), np.random.randint(0, self.n_concepts, len(self.n_w.keys())))) 
         self.sum_mu_c = np.zeros((self.n_concepts, self.n_dims))
 
         pb = tqdm.tqdm(desc="Initialize assignments", total=corpus.n_docs())
 
+        # Make assignements, and counts that will be used in inference
         for d, doc in enumerate(corpus.input_ids):
-            # topics = [randrange(self.n_topics) for w in doc]
+            # Assign topics and concepts for this doc
             topics = np.random.randint(0, self.n_topics, len(doc))
-            # concepts = [init_concepts[w] for w in doc]
             concepts = np.vectorize(init_wordconcept.__getitem__)(doc)
+            # NB: Would be interesting to have other ways of initializing vectors. e.g. kmeans++
+            
             vectors = corpus.get_doc(d)
             self.topics.append(topics)
             self.concepts.append(concepts)
             
+            # Counts
             nzc = Counter(topics)
             ncc = Counter(concepts)
             self.n_z[list(nzc.keys())] = list(nxc.values())
@@ -215,8 +233,9 @@ class cLCTM:
         self.sigma_c = np.zeros(self.n_concepts)
         self.mu_c_dot_mu_c = np.zeros(self.n_concepts)
 
+        # From concept assignments, produce concept vectors
         for c in tqdm.trange(self.n_concepts, desc="Initialize concept vectors"):
-            self.mu_c[c], self.sigma_c[c] = self.calc_mu_sigma(c)
+            self.mu_c[c], self.sigma_c[c] = self._calc_mu_sigma(c)
             self.mu_c_dot_mu_c = np.inner(self.mu_c[c], self.mu_c[c])
 
         # Stuff for "faster" heuristic
@@ -226,7 +245,7 @@ class cLCTM:
                     for d in corpus.input_ids
                 ]
 
-    def calc_mu_sigma(self, concept_idx):
+    def _calc_mu_sigma(self, concept_idx):
         z = concept_idx
         var_inverse = self.noise/self.n_z[z] + 1/self.sigma_prior
         sigma = self.noise + 1/var_inverse
@@ -237,13 +256,13 @@ class cLCTM:
 
         return mu, sigma
 
-    def calc_theta(self):
+    def theta(self):
         return (self.n_dz.T + self.alpha_vec)/(self.n_dz.sum(0) + self.alpha_vec.sum())
     
-    def calc_pho(self):
+    def phi(self):
         return (self.n_zc + self.beta)/(self.n_zc.sum(0) + self.beta*self.n_concepts)
 
-    def set_wv_priors(self):
+    def _set_wv_priors(self):
         # Double check this. Shouldn't it be a different denominator? E.g. number of words per concept.
         #self.mu_prior = self.sum_mu_c / self.sum_words
         # Alternatively, a per-concept count.
@@ -253,7 +272,7 @@ class cLCTM:
 
         #TODO: double check this weird function
 
-    def infer(self, corpus):
+    def _infer(self, corpus):
 
         def ghost_topic(d, z, c):
             self.n_dz[d, z] -= 1
@@ -270,7 +289,7 @@ class cLCTM:
             self.n_c[c] -= 1
             self.n_zc[z,c] -=1
 
-            self.mu_c[c], self.sigma_c[c] = self.calc_mu_sigma(c)
+            self.mu_c[c], self.sigma_c[c] = self._calc_mu_sigma(c)
             self.mu_c_dot_mu_c = np.inner(self.mu_c[c], self.mu_c[c])
 
         def update_concept(w, wvec, c, z):
@@ -278,7 +297,7 @@ class cLCTM:
             self.n_c[c] += 1
             self.n_zc[z,c] +=1
 
-            self.mu_c[c], self.sigma_c[c] = self.calc_mu_sigma(c)
+            self.mu_c[c], self.sigma_c[c] = self._calc_mu_sigma(c)
             self.mu_c_dot_mu_c = np.inner(self.mu_c[c], self.mu_c[c])
 
         def sample_z(d, c):
