@@ -27,14 +27,14 @@ class Corpus:
     
     def __init__(
                 self,
-                langmodel="bert-base-multilingual-cased",   # TODO: maybe change this to reg BERT?
+                langmodel="bert-base-multilingual-cased",
                 store_corpus=False,                         # Not yet implemented
                 softmax=False
 
             ):
         """
         langmodel: if it's a str, then the model is loaded using transformers. If it's a gensim KeyedVector
-            or a dict, then we're using static word embeddings.
+            or a dict, then we're using static word embeddings. Default is Multilingual BERT.
 
         store_corpus: if True, then the corpus is converted to vectors, which are stored on disk, in a temporary
             folder.
@@ -114,7 +114,7 @@ class Corpus:
             r = self.cvmodel(torch.tensor(
                 [list(chain(*self.input_ids))],
                 [list(chain(*([i]*len(doc) for i, doc in enumerate(self.input_ids))))]
-            )[0][0].detach().numpy()
+            )[0][0].detach().numpy())
 
             i0 = 0
             for d in doc_idx:
