@@ -1,7 +1,7 @@
 # coding: utf-8
 
 import numpy as np
-from tqdm.auto import tqdm
+import tqdm.auto as tqdm
 
 torchtf_avail = True
 try:
