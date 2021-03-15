@@ -211,7 +211,7 @@ class cLCTM:
             # Counts
             nzc = Counter(topics)
             ncc = Counter(concepts)
-            self.n_z[list(nzc.keys())] = list(nxc.values())
+            self.n_z[list(nzc.keys())] = list(nzc.values())
             self.n_c[list(ncc.keys())] = list(ncc.values())
 
             for z, count in nzc.items():
