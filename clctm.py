@@ -29,8 +29,9 @@ class Corpus:
                 self,
                 langmodel="bert-base-multilingual-cased",
                 store_corpus=False,                         # Not yet implemented
-                softmax=False
-
+                softmax=False,
+                tokenizer=None,
+                vecmodel=None
             ):
         """
         langmodel: if it's a str, then the model is loaded using transformers. If it's a gensim KeyedVector
@@ -43,7 +44,9 @@ class Corpus:
 
         For the moment, though, static word embeddings are not implemented yet.
         """
-
+        
+        self.tokenizer = tokenizer
+        self.cvmodel = vecmodel
         if torchtf_avail and isinstance(langmodel, str):
             self.tokenizer = AutoTokenizer.from_pretrained(langmodel) if tokenizer is None else tokenizer
             self.cvmodel = AutoModel.from_pretrained(langmodel) if vecmodel is None else vecmodel
