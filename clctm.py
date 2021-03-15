@@ -305,7 +305,7 @@ class cLCTM:
             c2 = self.n_dz[d] + self.alpha_vec
             p = c1*c2
             p = p/p.sum()
-)
+
             return np.random.choice(list(range(self.n_topics)), p=p)
 
         def softmax(v):
@@ -339,7 +339,7 @@ class cLCTM:
             
             for doc in range(self.n_docs):
                 
-                for w, wvec, z, c, i in zip(self.input_ids[doc], corpus.get_doc(doc), self.topics[doc], self.concepts[doc], range(len(self.input_ids[doc])):
+                for w, wvec, z, c, i in zip(self.input_ids[doc], corpus.get_doc(doc), self.topics[doc], self.concepts[doc], range(len(self.input_ids[doc]))):
                     assert c>=0 and c<self.n_concepts
                     assert z>=0 and z<self.n_topics
                     
@@ -370,7 +370,6 @@ class cLCTM:
                     elif self.faster:
                         self.consec_sampled_num[doc][i] += 1
 
-               pbdoc.update(1) 
+                pbdoc.update(1) 
 
             pb.update(1)
-
