@@ -201,7 +201,7 @@ class cLCTM:
         for d, doc in enumerate(corpus.input_ids):
             # Assign topics and concepts for this doc
             topics = np.random.randint(0, self.n_topics, len(doc))
-            concepts = np.vectorize(init_wordconcept.__getitem__)(doc)
+            concepts = np.vectorize(self.init_wordconcept.__getitem__)(doc)
             # NB: Would be interesting to have other ways of initializing vectors. e.g. kmeans++
             
             vectors = corpus.get_doc(d)
