@@ -27,8 +27,9 @@ class Corpus:
     
     def __init__(
                 self,
+                data=None,
                 langmodel="bert-base-multilingual-cased",
-                store_corpus=False,                         # Not yet implemented
+                store_corpus=None,                         # Not yet implemented
                 softmax=False,
                 tokenizer=None,
                 vecmodel=None
@@ -61,8 +62,22 @@ class Corpus:
         self.store_corpus=store_corpus
         self.softmax = softmax
         self.input_ids = []
+        self.doc_ids = []
+        self.doc_rng = {}
+        self.n_docs = 0
 
-    def __call__(
+        if data is not None:
+            self.add_docs(data)
+
+    def _restrict_length(self, tokens, max_seqlen=None):
+        if max_seqlen is None:
+            max_seqlen = self.cvmodel.config.max_position_embeddings
+        if isinstance(tokens[0], int):
+            return tokens[:max_seqlen]
+        else:
+            return [ t[:max_seqlen] for t in tokens ]
+
+    def add_docs(
                 self,
                 data
             ):
@@ -76,30 +91,55 @@ class Corpus:
             - a list of lists of int: each list of int is added as a single document
         """
 
+        def do_single(iids):
+            self.doc_rng[self.n_docs] = (len(self.input_ids), len(self.input_ids) + len(iids))
+            self.input_ids.extend(iids)
+            self.n_docs += 1
+
+        def do_multiple(iids):
+            ncs = np.cumsum([0] + [ len(i) for i in iids ])
+            self.doc_rng.update(dict(zip(range(self.n_docs, self.n_docs+len(iids)), zip(ncs[:-1], ncs[1:]))))
+            self.input_ids.extend(chain(*iids))
+            self.n_docs += len(iids)
+
         if isinstance(data, str):
             typ = "str"
-            self.input_ids.append(self.tokenizer(data)["input_ids"])
+            iids = self._restrict_length(self.tokenizer(data)["input_ids"])
+            do_single(iids)
+
         elif isinstance(data, list) and len(data)>0:
             if isinstance(data[0],str):
                 typ = "lostr"
-                self.input_ids += self.tokenizer(data)["input_ids"]
+                iids = self._restrict_length(self.tokenizer(data)["input_ids"])
+                do_multiple(iids)
+
             elif isinstance(data[0], int):
                 typ = "loint"
-                self.input_ids += [ data ]
+                do_single(data)
+
             elif isinstance(data[0], list) and len(data[0])>0:
                 # Obv, first sentence shouldn't be empty cause no sentence should be empty
                 # if ever we need to test this (but I suspect it may take time):
                 # assert min(len(i) for i in data)>0
                 assert isinstance(data[0][0], int)
                 typ = "loloint"
-                self.input_ids += data
+                do_multiple(data)
 
         self.unifs = set(chain(*self.input_ids))
 
-    def n_docs(self):
-        "Returns the number of documents in the corpus"
+    def _get_indices(self, doc_idx):
+        if isinstance(doc_idx, int):
+            return list(range(*self.doc_rng(doc_idx)))
+        else:
+            return list(chain(*(range(*self.doc_rng[d] for d in doc_idx))))
 
-        return len(self.input_ids)
+    def _get_mask(self, doc_idx):
+        r = np.full(len(self.input_ids), False)
+        r[self._get_indices(doc_idx)] = True
+        return r
+
+    def get_doc_iids(self, doc_idx):
+        return self.input_ids[self._get_indices(doc_idx)]
 
     def get_doc(self, doc_idx):
         """
@@ -108,21 +148,20 @@ class Corpus:
         numpy array.
         """
 
-        if doc_idx is None: doc_idx = tuple(range(self.n_docs()))
+        if doc_idx is None: doc_idx = tuple(range(self.n_docs))
 
         if isinstance(doc_idx, int):
-            return self.cvmodel(torch.tensor([doc]))[0][0].detach().numpy()
-        elif isinstance(doc_idx, [list, tuple, set]):
-            assert isinstance(doc_idx[0], int)
+            yield self.cvmodel(torch.tensor([self.get_doc_iids(doc_idx)]))[0][0].detach().numpy()
+        else:
+            indices = self._get_indices(doc_idx)
             r = self.cvmodel(torch.tensor(
-                [list(chain(*self.input_ids))],
-                [list(chain(*([i]*len(doc) for i, doc in enumerate(self.input_ids))))]
+                [self.input_ids[indices]],
+                [self.doc_ids[indices]]
             )[0][0].detach().numpy())
 
             i0 = 0
             for d in doc_idx:
-                yield r[i0:i0+len(self.input_ids[d])]
-                i0 += len(self.input_ids[d])
+                yield r[slice(*self.doc_rng[d]]
     
     def get_docs(self, doc_ids=None):
         """
@@ -130,8 +169,12 @@ class Corpus:
         for the whole corpus.
         """
         if doc_ids is None:
-            for r in self.get_doc(range(self.n_docs())):
-                yield r
+            r = self.cvmodel(torch.tensor(
+                [self.input_ids],
+                [self.doc_ids]
+            )[0][0].detach().numpy())
+            for _, v in sorted(self.doc_rng.items()):
+                yield r[slice(*v)]
         else:
             return self.get_doc(doc_ids)
 
@@ -175,15 +218,23 @@ class cLCTM:
 
     def fit(self, corpus):
         assert isinstance(corpus, Corpus)
-        assert corpus.n_docs() > 0
+        assert corpus.n_docs > 0
 
         self._init_values(corpus)
         self._infer(corpus)
 
     def _init_values(self, corpus):
+        self.n_docs = corpus.n_docs
+        self.max_doclen = corpus.cvmodel.config.max_position_embeddings
+
+        self.
+
+
+
+    def _init_values_old(self, corpus):
 
         # Initialize a bunch of variables
-        self.n_docs = corpus.n_docs()
+        self.n_docs = corpus.n_docs
         self.topics = []
         self.concepts = []
         self.n_z = np.zeros(self.n_topics, dtype=int)
@@ -195,7 +246,7 @@ class cLCTM:
         self.init_wordconcept = dict(zip(self.n_w.keys(), np.random.randint(0, self.n_concepts, len(self.n_w.keys())))) 
         self.sum_mu_c = np.zeros((self.n_concepts, self.n_dims))
 
-        pb = tqdm.tqdm(desc="Initialize assignments", total=corpus.n_docs())
+        pb = tqdm.tqdm(desc="Initialize assignments", total=corpus.n_docs)
 
         # Make assignements, and counts that will be used in inference
         for d, doc in enumerate(corpus.input_ids):
@@ -204,9 +255,15 @@ class cLCTM:
             concepts = np.vectorize(self.init_wordconcept.__getitem__)(doc)
             # NB: Would be interesting to have other ways of initializing vectors. e.g. kmeans++
             
-            vectors = corpus.get_doc(d)
+            vectors = list(corpus.get_doc(d))[0]
             self.topics.append(topics)
             self.concepts.append(concepts)
+            
+            if len(vectors) != len(concepts):
+                print(concepts)
+                print(vectors)
+
+                raise Exception(f"Length concept list: {len(concepts)}, vectors: {len(vectors)}")
             
             # Counts
             nzc = Counter(topics)
@@ -220,6 +277,7 @@ class cLCTM:
                 self.n_zc[z,c] += count
             for c in ncc.keys():
                self.sum_mu_c[c] += vectors[concepts==c,:].sum(0)
+               #self.sum_mu_c[c] += sum( vectors[i] for i in np.where(concepts==c)[0] )
             
             pb.update(1)
         
@@ -229,7 +287,7 @@ class cLCTM:
         # so using sum_mu_c instead
         # self.sum_vectors = self.sum_mu_c.copy()
 
-        self.set_wv_priors()
+        self._set_wv_priors()
 
         # Init concepts
         self.mu_c = np.zeros((self.n_dims, self.n_concepts))
@@ -269,7 +327,7 @@ class cLCTM:
         # Double check this. Shouldn't it be a different denominator? E.g. number of words per concept.
         #self.mu_prior = self.sum_mu_c / self.sum_words
         # Alternatively, a per-concept count.
-        self.mu_prior = self.sum_mu_c / self.n_c
+        self.mu_prior = self.sum_mu_c / self.n_c.T
 
         self.sigma_prior = 1.0 # Yes, this is kinda weird as well.
 
