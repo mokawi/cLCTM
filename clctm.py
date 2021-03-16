@@ -131,7 +131,7 @@ class Corpus:
         if isinstance(doc_idx, int):
             return list(range(*self.doc_rng(doc_idx)))
         else:
-            return list(chain(*(range(*self.doc_rng[d] for d in doc_idx))))
+            return list(chain(*(range(*self.doc_rng[d]) for d in doc_idx)))
 
     def _get_mask(self, doc_idx):
         r = np.full(len(self.input_ids), False)
