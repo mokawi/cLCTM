@@ -32,7 +32,9 @@ class Corpus:
                 store_corpus=None,                         # Not yet implemented
                 softmax=False,
                 tokenizer=None,
-                vecmodel=None
+                vecmodel=None,
+                use_cuda=None,
+                cuda_device=0
             ):
         """
         langmodel: if it's a str, then the model is loaded using transformers. If it's a gensim KeyedVector
@@ -63,8 +65,16 @@ class Corpus:
         self.softmax = softmax
         self.input_ids = []
         self.doc_ids = []
+        self.token_vectors = None
         self.doc_rng = {}
         self.n_docs = 0
+
+        if use_cuda is None:
+            self.use_cuda = torch.cuda.is_available()
+            self.cvmodel = self.cvmodel.to(f'cuda:{cuda_device}')
+        else:
+            self.use_cuda = use_cuda
+        self.cuda_device = cuda_device
 
         if data is not None:
             self.add_docs(data)
@@ -79,7 +89,8 @@ class Corpus:
 
     def add_docs(
                 self,
-                data
+                data,
+                vectorize = True
             ):
         """
         Appends documents to the corpus.
@@ -91,15 +102,19 @@ class Corpus:
             - a list of lists of int: each list of int is added as a single document
         """
 
+        old_n_docs = self.n_docs
+
         def do_single(iids):
             self.doc_rng[self.n_docs] = (len(self.input_ids), len(self.input_ids) + len(iids))
             self.input_ids.extend(iids)
+            self.doc_ids.extend([self.n_docs]*len(iids))
             self.n_docs += 1
 
         def do_multiple(iids):
             ncs = np.cumsum([0] + [ len(i) for i in iids ])
             self.doc_rng.update(dict(zip(range(self.n_docs, self.n_docs+len(iids)), zip(ncs[:-1], ncs[1:]))))
             self.input_ids.extend(chain(*iids))
+            self.doc_ids.extend(chain(*([self.n_docs+i]*l for i, l in enumerate((len(j) for j in iids)))))
             self.n_docs += len(iids)
 
         if isinstance(data, str):
@@ -125,11 +140,14 @@ class Corpus:
                 typ = "loloint"
                 do_multiple(data)
 
-        self.unifs = set(chain(*self.input_ids))
+        self.unifs = set(self.input_ids)
+        
+        if vectorize:
+            self.vectorize(range(old_n_docs, self.n_docs))
 
     def _get_indices(self, doc_idx):
         if isinstance(doc_idx, int):
-            return list(range(*self.doc_rng(doc_idx)))
+            return list(range(*self.doc_rng[doc_idx]))
         else:
             return list(chain(*(range(*self.doc_rng[d]) for d in doc_idx)))
 
@@ -141,6 +159,33 @@ class Corpus:
     def get_doc_iids(self, doc_idx):
         return self.input_ids[self._get_indices(doc_idx)]
 
+    def _get_single_doc(self, doc_idx):
+        if self.token_vectors:
+            if self.token_vectors.shape[0] <= doc_idx
+                return self.token_vectors[doc_idx]
+
+        indices = self._get_indices(doc_idx)
+        
+        t_iids = torch.tensor([self.input_ids[indices]])
+        t_dids = torch.tensor([self.doc_ids[indices]])
+
+        if self.use_cuda:
+            t_iids = t_iids.to(f'cuda:{self.cuda_device}')
+            t_dids = t_dids.to(f'cuda:{self.cuda_device}')
+
+        r = self.cvmodel(i_iids, t_dids)[0][0].detach()
+        
+        if self.use_cuda:
+            return r.cpu().numpy()
+        else:
+            return r.numpy()
+
+    def _vectorize_docs(self, start=0):
+        tvo = [self.token_vectors] if self.token_vectors else []
+        self.token_vectors = np.concatenate(tvo + [
+            self._get_single_doc(d) for d in tqdm.trange(start, self.n_docs, desc="Infering token vectors")
+        ])
+
     def get_doc(self, doc_idx):
         """
         Returns the vector for document at position <doc_idx>. If `doc_idx` is a list, tuple or
@@ -151,17 +196,14 @@ class Corpus:
         if doc_idx is None: doc_idx = tuple(range(self.n_docs))
 
         if isinstance(doc_idx, int):
-            yield self.cvmodel(torch.tensor([self.get_doc_iids(doc_idx)]))[0][0].detach().numpy()
+            yield self._get_single_doc(doc_idx)
         else:
-            indices = self._get_indices(doc_idx)
-            r = self.cvmodel(torch.tensor(
-                [self.input_ids[indices]],
-                [self.doc_ids[indices]]
-            )[0][0].detach().numpy())
-
-            i0 = 0
-            for d in doc_idx:
-                yield r[slice(*self.doc_rng[d]]
+            if len(doc_idx)>50 and self.token_vectors is None:
+                for d in tqdm.tqdm(doc_idx, desc="Retrieving vectors"):
+                    yield self._get_single_doc(d)
+            else:
+                for d in doc_idx:
+                    yield self._get_single_doc(d)
     
     def get_docs(self, doc_ids=None):
         """
@@ -169,12 +211,8 @@ class Corpus:
         for the whole corpus.
         """
         if doc_ids is None:
-            r = self.cvmodel(torch.tensor(
-                [self.input_ids],
-                [self.doc_ids]
-            )[0][0].detach().numpy())
-            for _, v in sorted(self.doc_rng.items()):
-                yield r[slice(*v)]
+            return self.get_doc(range(len(self.n_docs)))
+
         else:
             return self.get_doc(doc_ids)
 
@@ -227,7 +265,6 @@ class cLCTM:
         self.n_docs = corpus.n_docs
         self.max_doclen = corpus.cvmodel.config.max_position_embeddings
 
-        self.
 
 
 
