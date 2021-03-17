@@ -27,11 +27,29 @@ try:
 except ImportError:
     gensim_avail = False
 
+try:
+    from fastrand import pcg32bounded
+    fastrand_avail=True
+except:
+    fastrand_avail=False
+
 from random import randrange, shuffle, sample
 from itertools import chain
 from collections import Counter
 
 import logging
+
+if fastrand:
+    def pcgchoice(data, size=1):
+        if size == 1:
+            return data[pcg32bounded(len(data))]
+        else:
+            d = list(range(len(data))
+            idx = [ d.pop(pcg32bounded(len(d))) for i in range(size) ]
+            if isinstance(data, (np.ndarray, np.matrix)):
+                return data[idx]
+            else:
+                return [ data[i] for i in idx ]
 
 class Corpus:
     
@@ -291,16 +309,17 @@ class cLCTM:
         assert len(corpus.input_ids) == len(corpus.token_vectors)
 
         if method == "kmeans++":
+            choicefn = pcgchoice if fastrand_avail else np.random.choice
             #NB: Not using FAISS because it's actually much slower than cdist ?!! even with gpu
-            samp = corpus.token_vectors[np.random.choice(len(corpus.input_ids), sampsize)]
+            samp = corpus.token_vectors[choicefn(len(corpus.input_ids), sampsize)]
             
             # step 1
-            self.concept_vectors = [samp[np.random.choice(sampsize)]]
+            self.concept_vectors = [samp[choicefn(sampsize)]]
             distances = cdist(self.concept_vectors, samp, metric=metric)
 
             for i in tqdm.trange(1, self.n_concepts, desc="Kmeans++ initialization"):
-                #step 2 & 3
-                self.concept_vectors = np.concatenate((self.concept_vectors, [samp[np.random.choice(sampsize, p=softmax(distances.min(0)**2))]]))
+                #step 2 & 3 - note that random.multinomial is 3x faster than random.choice
+                self.concept_vectors = np.concatenate((self.concept_vectors, [samp[np.random.multinomial(sampsize, p=softmax(distances.min(0)**2)).argmax()]]))
                 distances = np.concatenate((distances, cdist([self.concept_vectors[-1]], samp, metric=metric)))
 
         else:
