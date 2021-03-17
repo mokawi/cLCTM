@@ -144,7 +144,7 @@ class Corpus:
         self.unifs = set(self.input_ids)
         
         if vectorize:
-            self.vectorize(range(old_n_docs, self.n_docs))
+            self._vectorize_docs(range(old_n_docs, self.n_docs))
 
     def _get_indices(self, doc_idx):
         if isinstance(doc_idx, int):
@@ -186,6 +186,9 @@ class Corpus:
         self.token_vectors = np.concatenate(tvo + [
             self._get_single_doc(d) for d in tqdm.trange(start, self.n_docs, desc="Infering token vectors")
         ])
+
+    def vectorize_new(self):
+        self._vectorize_docs(len(self.token_vectors))
 
     def get_doc(self, doc_idx):
         """
