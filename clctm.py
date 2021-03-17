@@ -4,6 +4,8 @@ import numpy as np
 from scipy.spatial.distance import cdist
 from scipy.special import softmax
 import tqdm.auto as tqdm
+import datetime as dt
+from operator import sub as substract
 
 torchtf_avail = True
 try:
@@ -170,7 +172,7 @@ class Corpus:
         return np.array(self.input_ids)[self._get_indices(doc_idx)]
 
     def _get_single_doc(self, doc_idx):
-        if self.token_vectors:
+        if self.token_vectors is not None:
             if self.token_vectors.shape[0] <= doc_idx:
                 return self.token_vectors[doc_idx]
 
@@ -306,7 +308,7 @@ class cLCTM:
 
     def _init_values(self, corpus):
         def kv2array(keys, values, size=None, dtype=None):
-            if size is None: size=max(keys)
+            if size is None: size=max(keys)+1
             if dtype is None:
                 if isinstance(values, np.ndarray):
                     dtype = values.dtype
@@ -323,108 +325,61 @@ class cLCTM:
 
         self.topics = np.random.randint(0, self.n_topics, len(corpus.input_ids))
         self._init_concept_vectors(corpus, sample_size=int(min(len(corpus.input_ids),max(100, min(1000000, 0.01*len(corpus.input_ids))))))
+
+        #NB: faiss is actually much faster (x18!) than cdist here
+        t0 = dt.datetime.now()
         if faiss_avail:
             cidx = faiss.IndexFlatL2(self.n_dims)
             cidx.add(self.concept_vectors)
-            c, _ = cidx.search(corpus.token_vectors, 1)
+            _, c = cidx.search(corpus.token_vectors, 1)
             self.concepts = c.T[0]
         else:
             self.concepts = cdist(corpus.token_vectors, self.concept_vectors).argmin(axis=1)
+        t1 = dt.datetime.now()
+        print(f"Concept assignments calculations took {t1-t0}")
 
         self.n_z = kv2array(*np.unique(self.topics, return_counts=True), size=self.n_topics)
         self.n_c = kv2array(*np.unique(self.concepts, return_counts=True), size=self.n_concepts)
 
         self.n_w = dict(zip(*np.unique(corpus.input_ids, return_counts=True)))
 
-        self.n_dz = np.concatenate((
+        t2 = dt.datetime.now()
+        print(f"Counted topics, concepts and word types ({t2-t1})")
+        
+        self.n_dz = np.concatenate([
             [kv2array(*np.unique(np.array(corpus.doc_ids)[self.topics==z], return_counts=True), size=corpus.n_docs)]
             for z in range(self.n_topics)
-        )).T
-        self.n_zc = np.concatenate((
-            [kv2array(*np.unique(self.concepts[self.topics==z]), size=self.n_concepts)]
+        ]).T
+        t3 =dt.datetime.now()
+        print(f"Counted concepts per document ({t3-t2}).")
+        self.n_zc = np.concatenate([
+            [kv2array(*np.unique(self.concepts[self.topics==z], return_counts=True), size=self.n_concepts)]
             for z in range(self.n_topics)
-        ))
+        ])
+        t4 =dt.datetime.now()
+        print(f"Counted concepts per topic ({t4-t3}).")
 
-        self.sum_mu_c = np.concatenate((
-            [corpus.token_vectors[self.concept==c].sum(0)]
+        self.sum_mu_c = np.concatenate([
+            [corpus.token_vectors[self.concepts==c].sum(0)]
             for c in range(self.n_concepts)
-        ))
-
-    def _init_values_old(self, corpus):
-        #TODO: remove this function if the new one works
-
-        # Initialize a bunch of variables
-        self.n_docs = corpus.n_docs
-        self.topics = []
-        self.concepts = []
-        self.n_z = np.zeros(self.n_topics, dtype=int)
-        self.n_c = np.zeros(self.n_concepts, dtype=int)
-        self.n_dz = np.zeros((self.n_docs, self.n_topics), dtype=int)
-        self.n_zc = np.zeros((self.n_topics, self.n_concepts), dtype=int)
-        self.alpha_vec = self.alpha * np.ones(self.n_topics)
-        self.n_w = Counter(chain(*corpus.input_ids))
-        self.init_wordconcept = dict(zip(self.n_w.keys(), np.random.randint(0, self.n_concepts, len(self.n_w.keys())))) 
-        self.sum_mu_c = np.zeros((self.n_concepts, self.n_dims))
-
-        pb = tqdm.tqdm(desc="Initialize assignments", total=corpus.n_docs)
-
-        # Make assignements, and counts that will be used in inference
-        for d, doc in enumerate(corpus.input_ids):
-            # Assign topics and concepts for this doc
-            topics = np.random.randint(0, self.n_topics, len(doc))
-            concepts = np.vectorize(self.init_wordconcept.__getitem__)(doc)
-            # NB: Would be interesting to have other ways of initializing vectors. e.g. kmeans++
-            
-            vectors = list(corpus.get_doc(d))[0]
-            self.topics.append(topics)
-            self.concepts.append(concepts)
-            
-            if len(vectors) != len(concepts):
-                print(concepts)
-                print(vectors)
-
-                raise Exception(f"Length concept list: {len(concepts)}, vectors: {len(vectors)}")
-            
-            # Counts
-            nzc = Counter(topics)
-            ncc = Counter(concepts)
-            self.n_z[list(nzc.keys())] = list(nzc.values())
-            self.n_c[list(ncc.keys())] = list(ncc.values())
-
-            for z, count in nzc.items():
-                self.n_dz[d, z] += count
-            for (z, c), count in Counter(zip(topics,concepts)).items():
-                self.n_zc[z,c] += count
-            for c in ncc.keys():
-               self.sum_mu_c[c] += vectors[concepts==c,:].sum(0)
-               #self.sum_mu_c[c] += sum( vectors[i] for i in np.where(concepts==c)[0] )
-            
-            pb.update(1)
+        ])
+        t5 = dt.datetime.now()
+        print(f"Computed sum_mu_c ({t5-t4}). Initialization is done.")
         
-        self.sum_words = sum(self.n_w.values())
-        
-        # only useful for set_wv_priors, and at that point, sum_mu_c == sum_vectors
-        # so using sum_mu_c instead
-        # self.sum_vectors = self.sum_mu_c.copy()
-
-        self._set_wv_priors()
-
         # Init concepts
         self.mu_c = self.concept_vectors
         self.sigma_c = np.zeros(self.n_concepts)
         self.mu_c_dot_mu_c = np.zeros(self.n_concepts)
 
         # From concept assignments, produce concept vectors
+        #TODO: Optimize this process, or replace with sigma calc
         for c in tqdm.trange(self.n_concepts, desc="Recompute concept vectors from assignments"):
             self.mu_c[c], self.sigma_c[c] = self._calc_mu_sigma(c)
             self.mu_c_dot_mu_c = np.inner(self.mu_c[c], self.mu_c[c])
 
         # Stuff for "faster" heuristic
         if self.faster:
-            self.consec_sampled_num = [
-                    [0] * len(d)
-                    for d in corpus.input_ids
-                ]
+            self.consec_sampled_num = np.zeros(len(corpus.input_ids))
 
     def _calc_mu_sigma(self, concept_idx):
         z = concept_idx
@@ -520,7 +475,15 @@ class cLCTM:
             
             for doc in range(self.n_docs):
                 
-                for w, wvec, z, c, i in zip(self.input_ids[doc], corpus.get_doc(doc), self.topics[doc], self.concepts[doc], range(len(self.input_ids[doc]))):
+                d0,dn = corpus.doc_rng[doc]
+                
+                for w, wvec, z, c, i in zip(
+                            corpus.get_doc_iids(doc),
+                            corpus.get_doc(doc),
+                            self.topics[d0:dn],
+                            self.concepts[d0:dn],
+                            range(dn-d0)
+                        ):
                     assert c>=0 and c<self.n_concepts
                     assert z>=0 and z<self.n_topics
                     
