@@ -289,35 +289,17 @@ class cLCTM:
         assert len(corpus.input_ids) == len(corpus.token_vectors)
 
         if method == "kmeans++":
-            if faiss_avail:
-                samp = corpus.token_vectors[np.random.choice(len(corpus.input_ids), sampsize)]
-                
-                # step 1
-                distidx = faiss.IndexFlatL2(self.n_dims)
-                cvs = [np.random.choice(sampsize)]
-                distidx.add(self.concept_vectors[cvs[0]:cvs[0]+1)
+            #NB: Not using FAISS because it's actually much slower than cdist ?!! even with gpu
+            samp = corpus.token_vectors[np.random.choice(len(corpus.input_ids), sampsize)]
+            
+            # step 1
+            self.concept_vectors = [samp[np.random.choice(sampsize)]]
+            distances = cdist(self.concept_vectors, samp, metric=metric)
 
-                for i in tqdm.trange(1, self.n_concepts, desc="Kmeans++ initialization (with faiss)"):
-                    #step 2
-                    D, _ = distidx.search(samp, 1)
-
-                    #step 3
-                    cvs.append(p.random.choice(sampsize, p=D.T[0]/D.sum()))
-                    distidx.add(self.concept_vectors[cvs[-1]:cvs[-1]+1])
-
-                selv.concept_vectors = samp[cvs]
-
-            else:
-                samp = corpus.token_vectors[np.random.choice(len(corpus.input_ids), sampsize)]
-                
-                # step 1
-                self.concept_vectors = [samp[np.random.choice(sampsize)]]
-                distances = cdist(self.concept_vectors, samp, metric=metric)
-
-                for i in tqdm.trange(1, self.n_concepts, desc="Kmeans++ initialization"):
-                    #step 2 & 3
-                    self.concept_vectors = np.concatenate((self.concept_vectors, [samp[np.random.choice(sampsize, p=softmax(distances.min(0)**2))]]))
-                    distances = np.concatenate((distances, cdist([self.concept_vectors[-1]], samp, metric=metric)))
+            for i in tqdm.trange(1, self.n_concepts, desc="Kmeans++ initialization"):
+                #step 2 & 3
+                self.concept_vectors = np.concatenate((self.concept_vectors, [samp[np.random.choice(sampsize, p=softmax(distances.min(0)**2))]]))
+                distances = np.concatenate((distances, cdist([self.concept_vectors[-1]], samp, metric=metric)))
 
         else:
             self.concept_vectors = np.random.choice(samp, size=self.n_concepts)
@@ -344,7 +326,7 @@ class cLCTM:
         if faiss_avail:
             cidx = faiss.IndexFlatL2(self.n_dims)
             cidx.add(self.concept_vectors)
-            c, _ = cidx.search(corpus.token_vectors)
+            c, _ = cidx.search(corpus.token_vectors, 1)
             self.concepts = c.T[0]
         else:
             self.concepts = cdist(corpus.token_vectors, self.concept_vectors).argmin(axis=1)
