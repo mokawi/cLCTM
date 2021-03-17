@@ -1,6 +1,7 @@
 # coding: utf-8
 
 import numpy as np
+from scipy.spatial.distance import cdist
 import tqdm.auto as tqdm
 
 torchtf_avail = True
@@ -261,14 +262,75 @@ class cLCTM:
         self._init_values(corpus)
         self._infer(corpus)
 
+    def _init_concepts_vectors(self, corpus, sample_size=0.01, method="kmeans++", metric="cosine")
+        """
+        Departs from the original algorithm, which assigned words to a concept and deduced concept vectors from its assignments.
+        Doing the other way round enables using the kmeans++ heuristic. Maybe faster too.
+        """
+        sampsize = int(len(corpus.input_ids)*sample_size) if isinstance(sample_size, float) else sample_size
+        
+        if corpus.token_vectors is None:
+            # TODO: make it possible to init concepts w/o vectorizing
+            raise Exception("Corpus needs to be vectorized (Corpus.vectorize function).")
+        assert len(corpus.input_ids) == len(corpus.token_vectors)
+
+        if method == "kmeans++":
+            samp = corpus.token_vectors[np.random.choice(len(corpus.input_ids), sampsize)]
+            
+            # step 1
+            self.concept_vectors = [np.random.choice(samp)]
+
+            for i in tqdm.trange(1, self.n_concepts, desc="Kmeans++ initialization"):
+                #step 2
+                D = cdist(self.concept_vectors, samp, metric=metric).min(axis=0)
+                #step 3
+                self.concept_vectors = np.concatenate(self.concept_vectors, np.random.choice(samp, p=D**2)
+
+        else:
+            self.concept_vectors = np.random.choice(samp, size=self.n_concepts)
+
     def _init_values(self, corpus):
+        def kv2array(keys, values, size=None, dtype=None):
+            if size is None: size=max(keys)
+            if dtype is None:
+                if isinstance(values, np.ndarray):
+                    dtype = values.dtype
+                else:
+                    dtype = type(values[0])
+
+            r = np.zeros(size, dtype=dtype)
+            r[keys] = values
+            return r
+
         self.n_docs = corpus.n_docs
         self.max_doclen = corpus.cvmodel.config.max_position_embeddings
+        self.alpha_vec = self.alpha * np.ones(self.n_topics)
 
+        self.topics = np.random.randint(0, self.n_topics, len(corpus.input_ids))
+        self._init_concept_vectors(corpus, sample_size=max(100, min(1000000, ))
+        self.concepts = cdist(corpus.topic_vectors, self.concept_vectors).argmin(axis=0)
 
+        self.n_z = kv2array(*np.unique(self.topics, return_counts=True), size=self.n_topics)
+        self.n_c = kv2array(*np.unique(self.concepts, return_counts=True), size=self.n_concepts)
 
+        self.n_w = dict(zip(*np.unique(corpus.input_ids, return_counts=True)))
+
+        self.n_dz = np.concatenate((
+            [kv2array(*np.unique(corpus.doc_ids[self.topics==z], return_counts=True), size=corpus.n_docs)]
+            for z in range(self.n_topics)
+        )).T
+        self.n_zc = np.concatenate((
+            [kv2array(*np.unique(self.concepts[self.topics==z]), size=self.n_concepts)]
+            for z in range(self.n_topics)
+        ))
+
+        self.sum_mu_c = np.concatenate((
+            [corpus.token_vectors[self.concept==c].sum(0)]
+            for c in range(self.n_concepts)
+        ))
 
     def _init_values_old(self, corpus):
+        #TODO: remove this function if the new one works
 
         # Initialize a bunch of variables
         self.n_docs = corpus.n_docs
@@ -327,12 +389,12 @@ class cLCTM:
         self._set_wv_priors()
 
         # Init concepts
-        self.mu_c = np.zeros((self.n_dims, self.n_concepts))
+        self.mu_c = self.concept_vectors
         self.sigma_c = np.zeros(self.n_concepts)
         self.mu_c_dot_mu_c = np.zeros(self.n_concepts)
 
         # From concept assignments, produce concept vectors
-        for c in tqdm.trange(self.n_concepts, desc="Initialize concept vectors"):
+        for c in tqdm.trange(self.n_concepts, desc="Recompute concept vectors from assignments"):
             self.mu_c[c], self.sigma_c[c] = self._calc_mu_sigma(c)
             self.mu_c_dot_mu_c = np.inner(self.mu_c[c], self.mu_c[c])
 
