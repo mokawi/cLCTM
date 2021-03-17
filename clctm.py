@@ -39,15 +39,19 @@ from collections import Counter
 
 import logging
 
-if fastrand:
+if fastrand_avail:
     def pcgchoice(data, size=1):
         if size == 1:
+            if isinstance(data, int):
+                return pcg32bounded(data)
             return data[pcg32bounded(len(data))]
         else:
-            d = list(range(len(data))
+            d = list(range(len(data))) if not isinstance(data, int) else list(range(data))
             idx = [ d.pop(pcg32bounded(len(d))) for i in range(size) ]
             if isinstance(data, (np.ndarray, np.matrix)):
                 return data[idx]
+            elif isinstance(data, int):
+                return idx
             else:
                 return [ data[i] for i in idx ]
 
@@ -261,6 +265,7 @@ class cLCTM:
             alpha=0.1,
             beta=0.01,
             noise=0.5,
+            sigma_prior=1.0,
             n_iter=1500,
             faster_heuristic=False,     # Not implemented yet
             max_consec=100,
@@ -270,6 +275,7 @@ class cLCTM:
         self.n_dims = n_dims
         self.alpha = alpha
         self.beta = beta
+        self.sigma_prior = sigma_prior
         self.n_docs = 0
         self.noise = noise
         self.nneighbors = sampling_neighbors
@@ -302,6 +308,10 @@ class cLCTM:
         Doing the other way round enables using the kmeans++ heuristic. Maybe faster too.
         """
         sampsize = int(len(corpus.input_ids)*sample_size) if isinstance(sample_size, float) and sample_size<1 else sample_size
+        samp = corpus.token_vectors[choicefn(len(corpus.input_ids), sampsize)]
+
+        # Init mu prior, as we already have a sample (boosts time)
+        self.mu_prior = samp.mean(0)
         
         if corpus.token_vectors is None:
             # TODO: make it possible to init concepts w/o vectorizing
@@ -311,7 +321,6 @@ class cLCTM:
         if method == "kmeans++":
             choicefn = pcgchoice if fastrand_avail else np.random.choice
             #NB: Not using FAISS because it's actually much slower than cdist ?!! even with gpu
-            samp = corpus.token_vectors[choicefn(len(corpus.input_ids), sampsize)]
             
             # step 1
             self.concept_vectors = [samp[choicefn(sampsize)]]
@@ -319,7 +328,7 @@ class cLCTM:
 
             for i in tqdm.trange(1, self.n_concepts, desc="Kmeans++ initialization"):
                 #step 2 & 3 - note that random.multinomial is 3x faster than random.choice
-                self.concept_vectors = np.concatenate((self.concept_vectors, [samp[np.random.multinomial(sampsize, p=softmax(distances.min(0)**2)).argmax()]]))
+                self.concept_vectors = np.concatenate((self.concept_vectors, [samp[np.random.multinomial(1, pvals=softmax(distances.min(0)**2)).argmax()]]))
                 distances = np.concatenate((distances, cdist([self.concept_vectors[-1]], samp, metric=metric)))
 
         else:
@@ -384,7 +393,7 @@ class cLCTM:
         ])
         t5 = dt.datetime.now()
         print(f"Computed sum_mu_c ({t5-t4}). Initialization is done.")
-        
+
         # Init concepts
         self.mu_c = self.concept_vectors
         self.sigma_c = np.zeros(self.n_concepts)
@@ -407,7 +416,7 @@ class cLCTM:
 
         c1 = self.n_z[z] + self.noise/self.sigma_prior
         c2 = 1 + self.n_z[z] * (self.sigma_prior/self.noise)
-        mu = self.sum_mu_c[concept_id]/c1 + self.mu_prior/c2
+        mu = self.sum_mu_c[concept_idx]/c1 + self.mu_prior/c2
 
         return mu, sigma
 
@@ -417,17 +426,8 @@ class cLCTM:
     def phi(self):
         return (self.n_zc + self.beta)/(self.n_zc.sum(0) + self.beta*self.n_concepts)
 
-    def _set_wv_priors(self):
-        # Double check this. Shouldn't it be a different denominator? E.g. number of words per concept.
-        #self.mu_prior = self.sum_mu_c / self.sum_words
-        # Alternatively, a per-concept count.
-        self.mu_prior = self.sum_mu_c / self.n_c.T
-
-        self.sigma_prior = 1.0 # Yes, this is kinda weird as well.
-
-        #TODO: double check this weird function
-
     def _infer(self, corpus):
+        choicefn = pcgchoice if fastrand_avail else np.random.choice
 
         def ghost_topic(d, z, c):
             self.n_dz[d, z] -= 1
