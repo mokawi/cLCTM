@@ -162,7 +162,7 @@ class Corpus:
 
     def _get_single_doc(self, doc_idx):
         if self.token_vectors:
-            if self.token_vectors.shape[0] <= doc_idx
+            if self.token_vectors.shape[0] <= doc_idx:
                 return self.token_vectors[doc_idx]
 
         indices = self._get_indices(doc_idx)
@@ -262,7 +262,7 @@ class cLCTM:
         self._init_values(corpus)
         self._infer(corpus)
 
-    def _init_concepts_vectors(self, corpus, sample_size=0.01, method="kmeans++", metric="cosine")
+    def _init_concepts_vectors(self, corpus, sample_size=0.01, method="kmeans++", metric="cosine"):
         """
         Departs from the original algorithm, which assigned words to a concept and deduced concept vectors from its assignments.
         Doing the other way round enables using the kmeans++ heuristic. Maybe faster too.
@@ -284,7 +284,7 @@ class cLCTM:
                 #step 2
                 D = cdist(self.concept_vectors, samp, metric=metric).min(axis=0)
                 #step 3
-                self.concept_vectors = np.concatenate(self.concept_vectors, np.random.choice(samp, p=D**2)
+                self.concept_vectors = np.concatenate((self.concept_vectors, np.random.choice(samp, p=D**2)))
 
         else:
             self.concept_vectors = np.random.choice(samp, size=self.n_concepts)
@@ -307,7 +307,7 @@ class cLCTM:
         self.alpha_vec = self.alpha * np.ones(self.n_topics)
 
         self.topics = np.random.randint(0, self.n_topics, len(corpus.input_ids))
-        self._init_concept_vectors(corpus, sample_size=max(100, min(1000000, ))
+        self._init_concept_vectors(corpus, sample_size=min(len(corpus.input_ids),max(100, min(1000000, 0.01*len(corpus.input_ids)))))
         self.concepts = cdist(corpus.topic_vectors, self.concept_vectors).argmin(axis=0)
 
         self.n_z = kv2array(*np.unique(self.topics, return_counts=True), size=self.n_topics)
