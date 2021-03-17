@@ -144,7 +144,7 @@ class Corpus:
         self.unifs = set(self.input_ids)
         
         if vectorize:
-            self._vectorize_docs(range(old_n_docs, self.n_docs))
+            self._vectorize_docs(old_n_docs, self.n_docs)
 
     def _get_indices(self, doc_idx):
         if isinstance(doc_idx, int):
