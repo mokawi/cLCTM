@@ -2,15 +2,22 @@
 
 import numpy as np
 from scipy.spatial.distance import cdist
+from scipy.special import softmax
 import tqdm.auto as tqdm
 
 torchtf_avail = True
 try:
     import torch
     import torch.nn as nn
-    from transformers import AutoTokenizer, AutoModel
+    from transformers import AutoTokenizer, AutoModel, PreTrainedModel
 except ImportError:
     torchtf_avail = False
+
+faiss_avail = True
+try:
+    import faiss
+except ImportError:
+    faiss_avail = False
 
 gensim_avail = True
 try:
@@ -51,16 +58,18 @@ class Corpus:
         
         self.tokenizer = tokenizer
         self.cvmodel = vecmodel
+
         if torchtf_avail and isinstance(langmodel, str):
             self.tokenizer = AutoTokenizer.from_pretrained(langmodel) if tokenizer is None else tokenizer
             self.cvmodel = AutoModel.from_pretrained(langmodel) if vecmodel is None else vecmodel
             self.we_type = "cwe"
+            self.n_dims = self.cvmodel.config.hidden_size
         elif gensim_avail and isinstance(langmodel, gensim.models.keyedvectors.KeyedVectors):
             self.we_type = "gensim"
             self.wv = langmodel
-        elif isinstance(langmodel, dict):
-            self.we_type = "dict"
-            self.wv = langmodel
+            self.n_dims = self.wv.vector_size
+        elif isinstance(self.cvmodel, PreTrainedModel):
+            self.n_dims = self.cvmodel.config.hidden_size
 
         self.store_corpus=store_corpus
         self.softmax = softmax
@@ -144,7 +153,7 @@ class Corpus:
         self.unifs = set(self.input_ids)
         
         if vectorize:
-            self._vectorize_docs(old_n_docs, self.n_docs)
+            self._vectorize_docs(old_n_docs)
 
     def _get_indices(self, doc_idx):
         if isinstance(doc_idx, int):
@@ -158,7 +167,7 @@ class Corpus:
         return r
 
     def get_doc_iids(self, doc_idx):
-        return self.input_ids[self._get_indices(doc_idx)]
+        return np.array(self.input_ids)[self._get_indices(doc_idx)]
 
     def _get_single_doc(self, doc_idx):
         if self.token_vectors:
@@ -167,14 +176,14 @@ class Corpus:
 
         indices = self._get_indices(doc_idx)
         
-        t_iids = torch.tensor([self.input_ids[indices]])
-        t_dids = torch.tensor([self.doc_ids[indices]])
+        t_iids = torch.tensor([np.array(self.input_ids)[indices]])
+        t_dids = torch.tensor([np.array(self.doc_ids)[indices]])
 
         if self.use_cuda:
             t_iids = t_iids.to(f'cuda:{self.cuda_device}')
             t_dids = t_dids.to(f'cuda:{self.cuda_device}')
 
-        r = self.cvmodel(i_iids, t_dids)[0][0].detach()
+        r = self.cvmodel(t_iids, t_dids)[0][0].detach()
         
         if self.use_cuda:
             return r.cpu().numpy()
@@ -262,15 +271,17 @@ class cLCTM:
         assert isinstance(corpus, Corpus)
         assert corpus.n_docs > 0
 
+        assert self.n_dims == corpus.n_dims
+
         self._init_values(corpus)
         self._infer(corpus)
 
-    def _init_concepts_vectors(self, corpus, sample_size=0.01, method="kmeans++", metric="cosine"):
+    def _init_concept_vectors(self, corpus, sample_size=0.01, method="kmeans++", metric="cosine"):
         """
         Departs from the original algorithm, which assigned words to a concept and deduced concept vectors from its assignments.
         Doing the other way round enables using the kmeans++ heuristic. Maybe faster too.
         """
-        sampsize = int(len(corpus.input_ids)*sample_size) if isinstance(sample_size, float) else sample_size
+        sampsize = int(len(corpus.input_ids)*sample_size) if isinstance(sample_size, float) and sample_size<1 else sample_size
         
         if corpus.token_vectors is None:
             # TODO: make it possible to init concepts w/o vectorizing
@@ -278,16 +289,33 @@ class cLCTM:
         assert len(corpus.input_ids) == len(corpus.token_vectors)
 
         if method == "kmeans++":
-            samp = corpus.token_vectors[np.random.choice(len(corpus.input_ids), sampsize)]
-            
-            # step 1
-            self.concept_vectors = [np.random.choice(samp)]
+            if faiss_avail:
+                samp = corpus.token_vectors[np.random.choice(len(corpus.input_ids), sampsize)]
+                
+                # step 1
+                distidx = faiss.IndexFlatL2(self.n_dims)
+                self.concept_vectors = [samp[np.random.choice(sampsize)]]
+                distids.add(np.array(self.concept_vectors))
 
-            for i in tqdm.trange(1, self.n_concepts, desc="Kmeans++ initialization"):
-                #step 2
-                D = cdist(self.concept_vectors, samp, metric=metric).min(axis=0)
-                #step 3
-                self.concept_vectors = np.concatenate((self.concept_vectors, np.random.choice(samp, p=D**2)))
+                for i in tqdm.trange(1, self.n_concepts, desc="Kmeans++ initialization"):
+                    #step 2
+                    D, _ = distidx.search(samp, 1)
+
+                    #step 3
+                    self.concept_vectors = np.concatenate((self.concept_vectors, [samp[np.random.choice(sampsize, p=D.T[0]/D.sum())]]))
+                    distidx.add(self.concept_vectors[:-1])
+
+            else:
+                samp = corpus.token_vectors[np.random.choice(len(corpus.input_ids), sampsize)]
+                
+                # step 1
+                self.concept_vectors = [samp[np.random.choice(sampsize)]]
+                distances = cdist(self.concept_vectors, samp, metric=metric)
+
+                for i in tqdm.trange(1, self.n_concepts, desc="Kmeans++ initialization"):
+                    #step 2 & 3
+                    self.concept_vectors = np.concatenate((self.concept_vectors, [samp[np.random.choice(sampsize, p=softmax(distances.min(0)**2))]]))
+                    distances = np.concatenate((distances, cdist([self.concept_vectors[-1]], samp, metric=metric)))
 
         else:
             self.concept_vectors = np.random.choice(samp, size=self.n_concepts)
@@ -310,8 +338,14 @@ class cLCTM:
         self.alpha_vec = self.alpha * np.ones(self.n_topics)
 
         self.topics = np.random.randint(0, self.n_topics, len(corpus.input_ids))
-        self._init_concept_vectors(corpus, sample_size=min(len(corpus.input_ids),max(100, min(1000000, 0.01*len(corpus.input_ids)))))
-        self.concepts = cdist(corpus.topic_vectors, self.concept_vectors).argmin(axis=0)
+        self._init_concept_vectors(corpus, sample_size=int(min(len(corpus.input_ids),max(100, min(1000000, 0.01*len(corpus.input_ids))))))
+        if faiss_avail:
+            cidx = faiss.IndexFlatL2(self.n_dims)
+            cidx.add(self.concept_vectors)
+            c, _ = cidx.search(corpus.token_vectors)
+            self.concepts = c.T[0]
+        else:
+            self.concepts = cdist(corpus.token_vectors, self.concept_vectors).argmin(axis=1)
 
         self.n_z = kv2array(*np.unique(self.topics, return_counts=True), size=self.n_topics)
         self.n_c = kv2array(*np.unique(self.concepts, return_counts=True), size=self.n_concepts)
@@ -319,7 +353,7 @@ class cLCTM:
         self.n_w = dict(zip(*np.unique(corpus.input_ids, return_counts=True)))
 
         self.n_dz = np.concatenate((
-            [kv2array(*np.unique(corpus.doc_ids[self.topics==z], return_counts=True), size=corpus.n_docs)]
+            [kv2array(*np.unique(np.array(corpus.doc_ids)[self.topics==z], return_counts=True), size=corpus.n_docs)]
             for z in range(self.n_topics)
         )).T
         self.n_zc = np.concatenate((
