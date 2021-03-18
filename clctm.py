@@ -3,6 +3,7 @@
 import numpy as np
 from scipy.spatial.distance import cdist
 from scipy.special import softmax
+from scipy.stats import rankdata
 import tqdm.auto as tqdm
 import datetime as dt
 from operator import sub as substract
@@ -327,16 +328,35 @@ class cLCTM:
         assert len(corpus.input_ids) == len(corpus.token_vectors)
 
         if method == "kmeans++":
-            #NB: Not using FAISS because it's actually much slower than cdist ?!! even with gpu
             
-            # step 1
-            self.concept_vectors = [samp[choicefn(sampsize)]]
-            distances = cdist(self.concept_vectors, samp, metric=metric)
+            if faiss_avail:
+                cfg = clctm.faiss.GpuIndexFlatConfig()
+                cfg.device = 0
 
-            for i in tqdm.trange(1, self.n_concepts, desc="Kmeans++ initialization"):
-                #step 2 & 3 - note that random.multinomial is 3x faster than random.choice
-                self.concept_vectors = np.concatenate((self.concept_vectors, [samp[np.random.multinomial(1, pvals=softmax(distances.min(0)**2)).argmax()]]))
-                distances = np.concatenate((distances, cdist([self.concept_vectors[-1]], samp, metric=metric)))
+                # step 1
+                self.concept_index = faiss.GpuIndexFlatL2(faiss.StandardGpuResources(), self.n_dims, cfg)
+                cvs = [np.random.choice(sampsize)]
+                self.concept_index.add(self.concept_vectors[cvs[0]:cvs[0]+1)
+
+                for i in tqdm.trange(1, self.n_concepts, desc="Kmeans++ initialization (with faiss)"):
+                    #step 2
+                    D, _ = self.concept_index.search(samp, 1)
+
+                    #step 3
+                    cvs.append(p.random.choice(sampsize, p=D.T[0]/D.sum()))
+                    self.concept_index.add(self.concept_vectors[cvs[-1]:cvs[-1]+1])
+
+                self.concept_vectors = samp[cvs]
+
+            else:
+                # step 1
+                self.concept_vectors = [samp[choicefn(sampsize)]]
+                distances = cdist(self.concept_vectors, samp, metric=metric)
+
+                for i in tqdm.trange(1, self.n_concepts, desc="Kmeans++ initialization"):
+                    #step 2 & 3 - note that random.multinomial is 3x faster than random.choice
+                    self.concept_vectors = np.concatenate((self.concept_vectors, [samp[np.random.multinomial(1, pvals=softmax(distances.min(0)**2)).argmax()]]))
+                    distances = np.concatenate((distances, cdist([self.concept_vectors[-1]], samp, metric=metric)))
 
         else:
             self.concept_vectors = np.random.choice(samp, size=self.n_concepts)
@@ -364,9 +384,7 @@ class cLCTM:
         #NB: faiss is actually much faster (x18!) than cdist here
         t0 = dt.datetime.now()
         if faiss_avail:
-            cidx = faiss.IndexFlatL2(self.n_dims)
-            cidx.add(self.concept_vectors)
-            _, c = cidx.search(corpus.token_vectors, 1)
+            _, c = self.concept_index.search(corpus.token_vectors, 1)
             self.concepts = c.T[0]
         else:
             self.concepts = cdist(corpus.token_vectors, self.concept_vectors).argmin(axis=1)
@@ -475,24 +493,38 @@ class cLCTM:
             # .maxCoeff() effectively seems to be .max()
             return r/r.sum()
 
-        def sample_c(w, wvec, z):
+        def sample_c(w, i, wvec, z):
             # NB: orig implementation reduced time here by creating "neighbor lists" for each
             # token. Obviously, cwe change even when tokens are the same, so we can't do that
             # here.
             # TODO: check if it's still faster to pick closest concepts for each word token
-            # TODO: Make sure not using softmax is ok.
             # TODO: (Maybe) check if derivation checks out? Pretty weird to me.
-            t1 = -0.5 * self.n_dims * np.log(self.sigma_c)
-            t2 = -(0.5 / self.sigma_c) * (self.mu_c_dot_mu_c - 2 * self.mu_c @ wvec)
+            nbindices = self.token_neighbors[i]
+            t1 = -0.5 * self.n_dims * np.log(self.sigma_c[nbindices])
+            t2 = -(0.5 / self.sigma_c[nbindices]) * (self.mu_c_dot_mu_c - 2 * self.mu_c[nbindices] @ wvec)
 
-            prob = softmax(np.log(self.n_zc[z] + self.beta) + t1 + t2)
+            prob = softmax(np.log(self.n_zc[z, nbindices] + self.beta) + t1 + t2)
 
             return np.random.choice(list(range(self.n_concepts)), p=prob)
+
+        def create_neighbor_list():
+            if faiss_avail:
+                
 
         pbg = tqdm.tqdm(total=self.n_iter, desc="Iterations")
         pbdoc = tqdm.tqdm(total=self.n_docs, desc="Documents")
        
         for it in range(self.n_iter):
+            if it % 5 == 0:
+                if faiss_avail:
+                    _, self.token_neighbors = self.concept_index.search(corpus.token_vectors, self.nneighbors)
+                else:
+                    self.token_neigbors = rankdata(
+                        cdict(corpus.token_vectors, self.concept_vectors),
+                        axis=1,
+                        method="dense"
+                    )[:,:self.nneighbors]
+
             num_z_changed = 0
             num_c_changed = 0
             num_omit = 0
