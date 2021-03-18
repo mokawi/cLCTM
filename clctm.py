@@ -7,6 +7,7 @@ from scipy.stats import rankdata
 import tqdm.auto as tqdm
 import datetime as dt
 from operator import sub as substract
+import time
 
 torchtf_avail = True
 try:
@@ -39,6 +40,21 @@ from itertools import chain
 from collections import Counter
 
 import logging
+
+profenabled = True
+proffile = "clctm.prof.log"
+def profprint(msg):
+    with open(proffile, "a") as f:
+        f.write(msg + "\n")
+
+def timefn(func):
+    def wrapper(*arg, **kw):
+        t1 = time.time()
+        res = func(*arg, **kw)
+        t2 = time.time()
+        profprint(f"{func.__name__}:\t{t2-t1}")
+        return res
+    return wrapper
 
 if fastrand_avail:
     def pcgchoice(data, size=1):
@@ -274,9 +290,10 @@ class cLCTM:
             noise=0.5,
             sigma_prior=1.0,
             n_iter=1500,
-            faster_heuristic=False,     # Not implemented yet
+            faster_heuristic=True,
             max_consec=100,
-            sampling_neighbors=300      # For sampling concepts
+            sampling_neighbors=300,     # For sampling concepts
+            profiling=True
             ):
         self.n_topics = n_topics
         self.n_dims = n_dims
@@ -290,6 +307,8 @@ class cLCTM:
         self.max_consec = max_consec
         self.n_iter = n_iter
 
+        self.profiling=profiling
+
         # set count variables according to preset concept vectors, if that's what we have
         if concept_vectors is not None and n_concepts is None:
             n_concepts = len(concept_vectors)
@@ -302,10 +321,14 @@ class cLCTM:
         # Worth mentioning that I do need the data, because word vectors are not bound
 
     def fit(self, corpus):
+        global profenabled
+
         assert isinstance(corpus, Corpus)
         assert corpus.n_docs > 0
 
         assert self.n_dims == corpus.n_dims
+
+        profenabled = self.profiling
 
         self._init_values(corpus)
         self._infer(corpus)
@@ -330,21 +353,21 @@ class cLCTM:
         if method == "kmeans++":
             
             if faiss_avail:
-                cfg = clctm.faiss.GpuIndexFlatConfig()
+                cfg = faiss.GpuIndexFlatConfig()
                 cfg.device = 0
 
                 # step 1
                 self.concept_index = faiss.GpuIndexFlatL2(faiss.StandardGpuResources(), self.n_dims, cfg)
                 cvs = [np.random.choice(sampsize)]
-                self.concept_index.add(self.concept_vectors[cvs[0]:cvs[0]+1)
+                self.concept_index.add(samp[cvs[0]:cvs[0]+1])
 
                 for i in tqdm.trange(1, self.n_concepts, desc="Kmeans++ initialization (with faiss)"):
                     #step 2
                     D, _ = self.concept_index.search(samp, 1)
 
                     #step 3
-                    cvs.append(p.random.choice(sampsize, p=D.T[0]/D.sum()))
-                    self.concept_index.add(self.concept_vectors[cvs[-1]:cvs[-1]+1])
+                    cvs.append(np.random.choice(sampsize, p=D.T[0]/D.sum()))
+                    self.concept_index.add(samp[cvs[-1]:cvs[-1]+1])
 
                 self.concept_vectors = samp[cvs]
 
@@ -417,7 +440,7 @@ class cLCTM:
             for c in range(self.n_concepts)
         ])
         t5 = dt.datetime.now()
-        print(f"Computed sum_mu_c ({t5-t4}). Initialization is done.")
+        print(f"Computed sum_mu_c ({t5-t4})")
 
         # Init concepts
         self.mu_c = self.concept_vectors
@@ -426,9 +449,12 @@ class cLCTM:
 
         # From concept assignments, produce concept vectors
         #TODO: Optimize this process, or replace with sigma calc
-        for c in tqdm.trange(self.n_concepts, desc="Recompute concept vectors from assignments"):
+        for c in range(self.n_concepts):
             self.mu_c[c], self.sigma_c[c] = self._calc_mu_sigma(c)
             self.mu_c_dot_mu_c = np.inner(self.mu_c[c], self.mu_c[c])
+
+        t6 = dt.datetime.now()
+        print(f"Computed new vectors from assignments ({t6-t5}). Initialization is done.")
 
         # Stuff for "faster" heuristic
         if self.faster:
@@ -454,17 +480,20 @@ class cLCTM:
     def _infer(self, corpus):
         choicefn = pcgchoice if fastrand_avail else np.random.choice
 
+        @timefn
         def ghost_topic(d, z, c):
             self.n_dz[d, z] -= 1
             self.n_zc[z, c] -= 1
             self.n_z[z] -= 1
         
+        @timefn
         def update_topic(d,z,c):
             self.n_dz[d,z] += 1
             self.n_zc[z,c] += 1
             self.n_z[z] +=1
 
-        def ghost_concept(w, wvec, c, z):
+        @timefn
+        def ghost_concept(wvec, c, z):
             self.sum_mu_c[c] -= wvec
             self.n_c[c] -= 1
             self.n_zc[z,c] -=1
@@ -472,7 +501,8 @@ class cLCTM:
             self.mu_c[c], self.sigma_c[c] = self._calc_mu_sigma(c)
             self.mu_c_dot_mu_c = np.inner(self.mu_c[c], self.mu_c[c])
 
-        def update_concept(w, wvec, c, z):
+        @timefn
+        def update_concept(wvec, c, z):
             self.sum_mu_c[c] += wvec
             self.n_c[c] += 1
             self.n_zc[z,c] +=1
@@ -480,6 +510,7 @@ class cLCTM:
             self.mu_c[c], self.sigma_c[c] = self._calc_mu_sigma(c)
             self.mu_c_dot_mu_c = np.inner(self.mu_c[c], self.mu_c[c])
 
+        @timefn
         def sample_z(d, c):
             c1 = (self. n_zc[:,c] + self.beta)/(self.n_z + self.beta * self.n_concepts)
             c2 = self.n_dz[d] + self.alpha_vec
@@ -488,16 +519,14 @@ class cLCTM:
 
             return np.random.choice(list(range(self.n_topics)), p=p)
 
-        def softmax(v):
+        @timefn
+        def softmax_old(v):
             r = np.exp(v-v.max())
             # .maxCoeff() effectively seems to be .max()
             return r/r.sum()
 
-        def sample_c(w, i, wvec, z):
-            # NB: orig implementation reduced time here by creating "neighbor lists" for each
-            # token. Obviously, cwe change even when tokens are the same, so we can't do that
-            # here.
-            # TODO: check if it's still faster to pick closest concepts for each word token
+        @timefn
+        def sample_c(i, wvec, z):
             # TODO: (Maybe) check if derivation checks out? Pretty weird to me.
             nbindices = self.token_neighbors[i]
             t1 = -0.5 * self.n_dims * np.log(self.sigma_c[nbindices])
@@ -505,72 +534,68 @@ class cLCTM:
 
             prob = softmax(np.log(self.n_zc[z, nbindices] + self.beta) + t1 + t2)
 
-            return np.random.choice(list(range(self.n_concepts)), p=prob)
+            return np.random.choice(nbindices, p=prob)
 
+        @timefn
         def create_neighbor_list():
             if faiss_avail:
-                
+                _, self.token_neighbors = self.concept_index.search(corpus.token_vectors, self.nneighbors)
+            else:
+                self.token_neigbors = rankdata(
+                    cdict(corpus.token_vectors, self.concept_vectors),
+                    axis=1,
+                    method="dense"
+                )[:,:self.nneighbors]
+
 
         pbg = tqdm.tqdm(total=self.n_iter, desc="Iterations")
-        pbdoc = tqdm.tqdm(total=self.n_docs, desc="Documents")
+        pbw = tqdm.tqdm(total=len(corpus.input_ids), desc="Words")
        
         for it in range(self.n_iter):
             if it % 5 == 0:
-                if faiss_avail:
-                    _, self.token_neighbors = self.concept_index.search(corpus.token_vectors, self.nneighbors)
-                else:
-                    self.token_neigbors = rankdata(
-                        cdict(corpus.token_vectors, self.concept_vectors),
-                        axis=1,
-                        method="dense"
-                    )[:,:self.nneighbors]
-
+                create_neighbor_list()
+                
             num_z_changed = 0
             num_c_changed = 0
             num_omit = 0
 
-            pbdoc.reset()
+            pbw.reset()
             
-            for doc in range(self.n_docs):
+            for w in range(len(corpus.input_ids)):
                 
-                d0,dn = corpus.doc_rng[doc]
+                profprint(f"\n# word {i}")
+
+                doc = corpus.doc_ids[w]
+                z = self.topics[w]
+                c = self.concepts[w]
+                wvec = corpus.token_vectors[w]
                 
-                for w, wvec, z, c, i in zip(
-                            corpus.get_doc_iids(doc),
-                            corpus.get_doc(doc),
-                            self.topics[d0:dn],
-                            self.concepts[d0:dn],
-                            range(d0, dn)
-                        ):
-                    assert c>=0 and c<self.n_concepts
-                    assert z>=0 and z<self.n_topics
-                    
-                    # Draw new topic
-                    ghost_topic(doc, z, c)
-                    z_new = sample_z(doc, c)
-                    self.topics[i] = z_new
-                    update_topic(doc, z, c)
+                # Draw new topic
+                ghost_topic(doc, z, c)
+                z_new = sample_z(doc, c)
+                self.topics[w] = z_new
+                update_topic(doc, z, c)
 
-                    if z_new != z: num_z_changed += 1
-                    z = z_new
+                if z_new != z: num_z_changed += 1
+                z = z_new
 
-                    if self.faster and self.consec_sampled_num[i] > self.max_consec:
-                        num_omit +=1
-                        continue
+                if self.faster and self.consec_sampled_num[w] > self.max_consec:
+                    num_omit +=1
+                    continue
 
-                    # Draw new concept
-                    ghost_concept(w, wvec, c, z)
-                    c_new = sample_c(w, wvec, z)
-                    self.concepts[i] = c_new
-                    update_concept(w, wvec, c_new, z)
+                # Draw new concept
+                ghost_concept(wvec, c, z)
+                c_new = sample_c(w, wvec, z)
+                self.concepts[w] = c_new
+                update_concept(wvec, c_new, z)
 
-                    if c != c_new:
-                        num_c_changed += 1
+                if c != c_new:
+                    num_c_changed += 1
 
-                        if self.faster:
-                            self.consec_sampled_num[i] = 0
-                    elif self.faster:
-                        self.consec_sampled_num[i] += 1
+                    if self.faster:
+                        self.consec_sampled_num[w] = 0
+                elif self.faster:
+                    self.consec_sampled_num[w] += 1
 
                 pbdoc.update(1) 
 
