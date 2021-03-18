@@ -563,7 +563,7 @@ class cLCTM:
             
             for w in range(len(corpus.input_ids)):
                 
-                profprint(f"\n# word {i}")
+                profprint(f"\n# word {w}")
 
                 doc = corpus.doc_ids[w]
                 z = self.topics[w]
@@ -597,6 +597,6 @@ class cLCTM:
                 elif self.faster:
                     self.consec_sampled_num[w] += 1
 
-                pbdoc.update(1) 
+                pbw.update(1) 
 
             pb.update(1)
