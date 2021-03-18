@@ -233,14 +233,20 @@ class Corpus:
         if doc_idx is None: doc_idx = tuple(range(self.n_docs))
 
         if isinstance(doc_idx, int):
-            yield self._get_single_doc(doc_idx)
+            return self._get_single_doc(doc_idx)
         else:
             if len(doc_idx)>50 and self.token_vectors is None:
-                for d in tqdm.tqdm(doc_idx, desc="Retrieving vectors"):
-                    yield self._get_single_doc(d)
+                return [
+                    self._get_single_doc(d)
+                    for d in tqdm.tqdm(doc_idx, desc="Retrieving vectors")
+                ]
+            elif self.token_vectors is None:
+                return [
+                    self._get_single_doc(d)
+                    for d in doc_idx
+                ]
             else:
-                for d in doc_idx:
-                    yield self._get_single_doc(d)
+                return self.token_vectors[self._get_indices(doc_idx)]
     
     def get_docs(self, doc_ids=None):
         """
@@ -281,6 +287,7 @@ class cLCTM:
         self.nneighbors = sampling_neighbors
         self.faster = faster_heuristic
         self.max_consec = max_consec
+        self.n_iter = n_iter
 
         # set count variables according to preset concept vectors, if that's what we have
         if concept_vectors is not None and n_concepts is None:
@@ -307,6 +314,7 @@ class cLCTM:
         Departs from the original algorithm, which assigned words to a concept and deduced concept vectors from its assignments.
         Doing the other way round enables using the kmeans++ heuristic. Maybe faster too.
         """
+        choicefn = pcgchoice if fastrand_avail else np.random.choice
         sampsize = int(len(corpus.input_ids)*sample_size) if isinstance(sample_size, float) and sample_size<1 else sample_size
         samp = corpus.token_vectors[choicefn(len(corpus.input_ids), sampsize)]
 
@@ -319,7 +327,6 @@ class cLCTM:
         assert len(corpus.input_ids) == len(corpus.token_vectors)
 
         if method == "kmeans++":
-            choicefn = pcgchoice if fastrand_avail else np.random.choice
             #NB: Not using FAISS because it's actually much slower than cdist ?!! even with gpu
             
             # step 1
@@ -407,16 +414,16 @@ class cLCTM:
 
         # Stuff for "faster" heuristic
         if self.faster:
-            self.consec_sampled_num = np.zeros(len(corpus.input_ids))
+            self.consec_sampled_num = np.zeros(len(corpus.input_ids), dtype=np.uint32)
 
     def _calc_mu_sigma(self, concept_idx):
-        z = concept_idx
-        var_inverse = self.noise/self.n_z[z] + 1/self.sigma_prior
+        c = concept_idx
+        var_inverse = self.noise/self.n_c[c] + 1/self.sigma_prior
         sigma = self.noise + 1/var_inverse
 
-        c1 = self.n_z[z] + self.noise/self.sigma_prior
-        c2 = 1 + self.n_z[z] * (self.sigma_prior/self.noise)
-        mu = self.sum_mu_c[concept_idx]/c1 + self.mu_prior/c2
+        c1 = self.n_c[c] + self.noise/self.sigma_prior
+        c2 = 1 + self.n_c[c] * (self.sigma_prior/self.noise)
+        mu = self.sum_mu_c[c]/c1 + self.mu_prior/c2
 
         return mu, sigma
 
@@ -476,9 +483,9 @@ class cLCTM:
             # TODO: Make sure not using softmax is ok.
             # TODO: (Maybe) check if derivation checks out? Pretty weird to me.
             t1 = -0.5 * self.n_dims * np.log(self.sigma_c)
-            t2 = -(0.5 / self.sigma_c) * (self.mu_c_dot_mu_c - 2 * self.mu_c.T @ wvec)
+            t2 = -(0.5 / self.sigma_c) * (self.mu_c_dot_mu_c - 2 * self.mu_c @ wvec)
 
-            prob = softmax(np.log(self.n_zc[:,c] + self.beta) + t1 + t2)
+            prob = softmax(np.log(self.n_zc[z] + self.beta) + t1 + t2)
 
             return np.random.choice(list(range(self.n_concepts)), p=prob)
 
@@ -501,7 +508,7 @@ class cLCTM:
                             corpus.get_doc(doc),
                             self.topics[d0:dn],
                             self.concepts[d0:dn],
-                            range(dn-d0)
+                            range(d0, dn)
                         ):
                     assert c>=0 and c<self.n_concepts
                     assert z>=0 and z<self.n_topics
@@ -509,29 +516,29 @@ class cLCTM:
                     # Draw new topic
                     ghost_topic(doc, z, c)
                     z_new = sample_z(doc, c)
-                    self.topics[doc, i] = z_new
+                    self.topics[i] = z_new
                     update_topic(doc, z, c)
 
                     if z_new != z: num_z_changed += 1
                     z = z_new
 
-                    if faster and self.consec_sampled_num[doc][i] > self.max_consec:
+                    if self.faster and self.consec_sampled_num[i] > self.max_consec:
                         num_omit +=1
                         continue
 
                     # Draw new concept
                     ghost_concept(w, wvec, c, z)
                     c_new = sample_c(w, wvec, z)
-                    self.concepts[doc, i] = c_new
+                    self.concepts[i] = c_new
                     update_concept(w, wvec, c_new, z)
 
                     if c != c_new:
                         num_c_changed += 1
 
                         if self.faster:
-                            self.consec_sampled_num[doc][i] = 0
+                            self.consec_sampled_num[i] = 0
                     elif self.faster:
-                        self.consec_sampled_num[doc][i] += 1
+                        self.consec_sampled_num[i] += 1
 
                 pbdoc.update(1) 
 
