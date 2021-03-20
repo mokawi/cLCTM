@@ -593,7 +593,11 @@ class cLCTM:
             
             for w in range(len(corpus.input_ids)):
                 
+<<<<<<< HEAD
                 #profprint(f"\n# word {w}")
+=======
+                profprint(f"\n# word {w}")
+>>>>>>> ecbe877c62a0604f42c2f4c4da267e83f45870b1
 
                 doc = corpus.doc_ids[w]
                 z = self.topics[w]
