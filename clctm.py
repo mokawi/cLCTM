@@ -8,6 +8,8 @@ import tqdm.auto as tqdm
 import datetime as dt
 from operator import sub as substract
 import time
+import random
+from numba import jit
 
 torchtf_avail = True
 try:
@@ -71,6 +73,29 @@ if fastrand_avail:
                 return idx
             else:
                 return [ data[i] for i in idx ]
+
+    def pcgweightedchoice(weights):
+        N = len(weights)
+        avg = sum(weights)/N
+        aliases = [(1, None)]*N
+        smalls = ((i, w/avg) for i,w in enumerate(weights) if w < avg)
+        bigs = ((i, w/avg) for i,w in enumerate(weights) if w >= avg)
+        small, big = next(smalls, None), next(bigs, None)
+        while big and small:
+            aliases[small[0]] = (small[1], big[0])
+            big = (big[0], big[1] - (1-small[1]))
+            if big[1] < 1:
+                small = big
+                big = next(bigs, None)
+            else:
+                small = next(smalls, None)
+
+        def weighted_random():
+            i = pcg32bounded(N)
+            odds, alias = aliases[i]
+            return alias if (r-i) > odds else i
+
+        return weighted_random()
 
 class Corpus:
     
@@ -338,9 +363,9 @@ class cLCTM:
         Departs from the original algorithm, which assigned words to a concept and deduced concept vectors from its assignments.
         Doing the other way round enables using the kmeans++ heuristic. Maybe faster too.
         """
-        choicefn = pcgchoice if fastrand_avail else np.random.choice
+        #choicefn = pcgchoice if fastrand_avail else np.random.choice
         sampsize = int(len(corpus.input_ids)*sample_size) if isinstance(sample_size, float) and sample_size<1 else sample_size
-        samp = corpus.token_vectors[choicefn(len(corpus.input_ids), sampsize)]
+        samp = corpus.token_vectors[np.random.randint(len(corpus.input_ids), size=sampsize)]
 
         # Init mu prior, as we already have a sample (boosts time)
         self.mu_prior = samp.mean(0)
@@ -358,7 +383,7 @@ class cLCTM:
 
                 # step 1
                 self.concept_index = faiss.GpuIndexFlatL2(faiss.StandardGpuResources(), self.n_dims, cfg)
-                cvs = [np.random.choice(sampsize)]
+                cvs = [random.randint(0,sampsize)]
                 self.concept_index.add(samp[cvs[0]:cvs[0]+1])
 
                 for i in tqdm.trange(1, self.n_concepts, desc="Kmeans++ initialization (with faiss)"):
@@ -366,19 +391,19 @@ class cLCTM:
                     D, _ = self.concept_index.search(samp, 1)
 
                     #step 3
-                    cvs.append(np.random.choice(sampsize, p=D.T[0]/D.sum()))
+                    cvs += random.choices(range(sampsize), weights=D.T[0]/D.sum())
                     self.concept_index.add(samp[cvs[-1]:cvs[-1]+1])
 
                 self.concept_vectors = samp[cvs]
 
             else:
                 # step 1
-                self.concept_vectors = [samp[choicefn(sampsize)]]
+                self.concept_vectors = [random.choice(samp)]
                 distances = cdist(self.concept_vectors, samp, metric=metric)
 
                 for i in tqdm.trange(1, self.n_concepts, desc="Kmeans++ initialization"):
                     #step 2 & 3 - note that random.multinomial is 3x faster than random.choice
-                    self.concept_vectors = np.concatenate((self.concept_vectors, [samp[np.random.multinomial(1, pvals=softmax(distances.min(0)**2)).argmax()]]))
+                    self.concept_vectors = np.concatenate((self.concept_vectors, random.choices(samp, weights=softmax(distances.min(0)**2)).argmax()))
                     distances = np.concatenate((distances, cdist([self.concept_vectors[-1]], samp, metric=metric)))
 
         else:
@@ -478,21 +503,26 @@ class cLCTM:
         return (self.n_zc + self.beta)/(self.n_zc.sum(0) + self.beta*self.n_concepts)
 
     def _infer(self, corpus):
-        choicefn = pcgchoice if fastrand_avail else np.random.choice
+        #choicefn = pcgchoice if fastrand_avail else np.random.choice
+        
+        def softmax_pp(z):
+            num = np.exp(z)
+            s = num / esum(z)
+            return s
 
-        @timefn
+        #@timefn
         def ghost_topic(d, z, c):
             self.n_dz[d, z] -= 1
             self.n_zc[z, c] -= 1
             self.n_z[z] -= 1
         
-        @timefn
+        #@timefn
         def update_topic(d,z,c):
             self.n_dz[d,z] += 1
             self.n_zc[z,c] += 1
             self.n_z[z] +=1
 
-        @timefn
+        #@timefn
         def ghost_concept(wvec, c, z):
             self.sum_mu_c[c] -= wvec
             self.n_c[c] -= 1
@@ -501,7 +531,7 @@ class cLCTM:
             self.mu_c[c], self.sigma_c[c] = self._calc_mu_sigma(c)
             self.mu_c_dot_mu_c = np.inner(self.mu_c[c], self.mu_c[c])
 
-        @timefn
+        #@timefn
         def update_concept(wvec, c, z):
             self.sum_mu_c[c] += wvec
             self.n_c[c] += 1
@@ -510,22 +540,22 @@ class cLCTM:
             self.mu_c[c], self.sigma_c[c] = self._calc_mu_sigma(c)
             self.mu_c_dot_mu_c = np.inner(self.mu_c[c], self.mu_c[c])
 
-        @timefn
+        #@timefn
         def sample_z(d, c):
             c1 = (self. n_zc[:,c] + self.beta)/(self.n_z + self.beta * self.n_concepts)
             c2 = self.n_dz[d] + self.alpha_vec
             p = c1*c2
             p = p/p.sum()
 
-            return np.random.choice(list(range(self.n_topics)), p=p)
+            return random.choices(list(range(self.n_topics)), weights=p)[0]
 
-        @timefn
+        #@timefn
         def softmax_old(v):
             r = np.exp(v-v.max())
             # .maxCoeff() effectively seems to be .max()
             return r/r.sum()
 
-        @timefn
+        #@timefn
         def sample_c(i, wvec, z):
             # TODO: (Maybe) check if derivation checks out? Pretty weird to me.
             nbindices = self.token_neighbors[i]
@@ -534,9 +564,9 @@ class cLCTM:
 
             prob = softmax(np.log(self.n_zc[z, nbindices] + self.beta) + t1 + t2)
 
-            return np.random.choice(nbindices, p=prob)
+            return random.choices(nbindices, weights=prob)[0]
 
-        @timefn
+        #@timefn
         def create_neighbor_list():
             if faiss_avail:
                 _, self.token_neighbors = self.concept_index.search(corpus.token_vectors, self.nneighbors)
@@ -563,7 +593,7 @@ class cLCTM:
             
             for w in range(len(corpus.input_ids)):
                 
-                profprint(f"\n# word {i}")
+                #profprint(f"\n# word {w}")
 
                 doc = corpus.doc_ids[w]
                 z = self.topics[w]
@@ -597,6 +627,7 @@ class cLCTM:
                 elif self.faster:
                     self.consec_sampled_num[w] += 1
 
-                pbdoc.update(1) 
+                pbw.update(1) 
 
             pb.update(1)
+
