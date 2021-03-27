@@ -10,6 +10,7 @@ from operator import sub as substract
 import time
 import random
 from numba import jit
+from gibbssampler import *
 
 torchtf_avail = True
 try:
@@ -484,6 +485,8 @@ class cLCTM:
         # Stuff for "faster" heuristic
         if self.faster:
             self.consec_sampled_num = np.zeros(len(corpus.input_ids), dtype=np.uint32)
+        else:
+            self.consec_sampled_num = None
 
     def _calc_mu_sigma(self, concept_idx):
         c = concept_idx
@@ -507,7 +510,7 @@ class cLCTM:
         
         def softmax_pp(z):
             num = np.exp(z)
-            s = num / esum(z)
+            s = num / sum(z)
             return s
 
         #@timefn
@@ -577,61 +580,86 @@ class cLCTM:
                     method="dense"
                 )[:,:self.nneighbors]
 
+        if numba_avail:
 
-        pbg = tqdm.tqdm(total=self.n_iter, desc="Iterations")
-        pbw = tqdm.tqdm(total=len(corpus.input_ids), desc="Words")
-       
-        for it in range(self.n_iter):
-            if it % 5 == 0:
+            pbg = tqdm.tqdm(total=self.n_iter, desc="Iterations")
+
+            for i in range(0, self.n_iter, 5):
                 create_neighbor_list()
+
+                gibbslctm(
+                    self.doc_ids,
+                    self.topics,
+                    self.concepts,
+                    self.token_vectors,
+                    self.n_z, self.n_c,
+                    self.n_dz, self.n_zc,
+                    self.sum_mu_c,
+                    self.mu_c, self.sigma_c,
+                    self.mu_prior, self.sigma_prior,
+                    self.alpha_vec, self.beta,
+                    self.token_neighbors,
+                    self.consec_sampled_num,
+                    max_consec=self.max_consec,
+                    faster=self.faster,
+                    n_iter=5
+                )
+
+                pbg.update(5)
+
+
+        else: # no numba
+
+            pbg = tqdm.tqdm(total=self.n_iter, desc="Iterations")
+            pbw = tqdm.tqdm(total=len(corpus.input_ids), desc="Words")
+       
+            for it in range(self.n_iter):
+                if it % 5 == 0:
+                    create_neighbor_list()
+                    
+                num_z_changed = 0
+                num_c_changed = 0
+                num_omit = 0
+
+                pbw.reset()
                 
-            num_z_changed = 0
-            num_c_changed = 0
-            num_omit = 0
+                for w in range(len(corpus.input_ids)):
+                    
+                    #profprint(f"\n# word {w}")
 
-            pbw.reset()
-            
-            for w in range(len(corpus.input_ids)):
-                
-<<<<<<< HEAD
-                #profprint(f"\n# word {w}")
-=======
-                profprint(f"\n# word {w}")
->>>>>>> ecbe877c62a0604f42c2f4c4da267e83f45870b1
+                    doc = corpus.doc_ids[w]
+                    z = self.topics[w]
+                    c = self.concepts[w]
+                    wvec = corpus.token_vectors[w]
+                    
+                    # Draw new topic
+                    ghost_topic(doc, z, c)
+                    z_new = sample_z(doc, c)
+                    self.topics[w] = z_new
+                    update_topic(doc, z, c)
 
-                doc = corpus.doc_ids[w]
-                z = self.topics[w]
-                c = self.concepts[w]
-                wvec = corpus.token_vectors[w]
-                
-                # Draw new topic
-                ghost_topic(doc, z, c)
-                z_new = sample_z(doc, c)
-                self.topics[w] = z_new
-                update_topic(doc, z, c)
+                    if z_new != z: num_z_changed += 1
+                    z = z_new
 
-                if z_new != z: num_z_changed += 1
-                z = z_new
+                    if self.faster and self.consec_sampled_num[w] > self.max_consec:
+                        num_omit +=1
+                        continue
 
-                if self.faster and self.consec_sampled_num[w] > self.max_consec:
-                    num_omit +=1
-                    continue
+                    # Draw new concept
+                    ghost_concept(wvec, c, z)
+                    c_new = sample_c(w, wvec, z)
+                    self.concepts[w] = c_new
+                    update_concept(wvec, c_new, z)
 
-                # Draw new concept
-                ghost_concept(wvec, c, z)
-                c_new = sample_c(w, wvec, z)
-                self.concepts[w] = c_new
-                update_concept(wvec, c_new, z)
+                    if c != c_new:
+                        num_c_changed += 1
 
-                if c != c_new:
-                    num_c_changed += 1
+                        if self.faster:
+                            self.consec_sampled_num[w] = 0
+                    elif self.faster:
+                        self.consec_sampled_num[w] += 1
 
-                    if self.faster:
-                        self.consec_sampled_num[w] = 0
-                elif self.faster:
-                    self.consec_sampled_num[w] += 1
-
-                pbw.update(1) 
+                    pbw.update(1) 
 
             pb.update(1)
 
