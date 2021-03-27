@@ -594,7 +594,7 @@ class cLCTM:
                 create_neighbor_list()
 
                 gibbslctm(
-                    corpus.doc_ids,
+                    List(corpus.doc_ids),
                     self.topics,
                     self.concepts,
                     corpus.token_vectors,

@@ -12,7 +12,7 @@ def calc_mu_sigma(
         sum_mu_c_c
     ):
 
-    var_inverse = noise + n_c + 1/sigma_prior
+    var_inverse = noise + n_c_c + 1/sigma_prior
     sigma = noise + 1/var_inverse
 
     c1 = n_c_c + noise/sigma_prior
@@ -39,7 +39,7 @@ def softmax(z):
 #f8[:,:], f8[::1], f8[::1],
 #f8[::1], f8, f8,
 #f8[::1], f8,
-#u4[::1], u4, u4, b1, u4)
+#u4[::1], u4[::1], u4, b1, u4)
 #""")
 @jit(nopython=True)
 def gibbslctm(
@@ -100,7 +100,7 @@ def gibbslctm(
             n_z[z] += 1
 
             if faster:
-                if consec_sampled_num > max_consec:
+                if consec_sampled_num[w] > max_consec:
                     num_omit += 1
                     continue
 
@@ -116,13 +116,16 @@ def gibbslctm(
                 sigma_prior, mu_prior,
                 sum_mu_c[c]
             )
-            mu_c_dot_mu_c = np.inner(mu_c[c], mu_c[c])
+            #mu_c_dot_mu_c = np.inner(mu_c[c], mu_c[c])
+            mu_c_dot_mu_c = np.sum(mu_c[c]*mu_c[c])
 
             # Sample new concept
-            neighbors = token_neighbors[d]
-            t1 = -0.5 + n_dims + np.log(sigma_c[neighbors])
-            t2 = -(0.5/sigma_c[neighbors]) * (mu_c_dot_mu_c - 2 /mu_c[neighbors] @ wv)
-            p = softmax(np.log(n_zc[z, neighbors] + beta) + t1 + t2)
+            p = np.zeros(len(token_neighbors[d]))
+            for n in token_neighbors[d]:
+                t1 = -0.5 + n_dims + np.log(sigma_c[n])
+                t2 = -(0.5/sigma_c[n]) * (mu_c_dot_mu_c - 2 /mu_c[n] @ wv)
+                p[n] = np.log(n_zc[z, n] + beta) + t1 + t2
+            p = softmax(p)
 
             c_new = np.random.multinomial(1,p).argmax()
 
