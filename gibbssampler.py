@@ -21,6 +21,10 @@ def calc_mu_sigma(
 
     return mu, sigma
 
+@jit("f8(f8[:])", cache=False, nopython=True, nogil=True, parallel=True)
+def esum(z):
+    return np.sum(np.exp(z))
+
 @jit("f8[:](f8[:])", cache=False, nopython=True, nogil=True, parallel=True)
 def softmax(z):
     num = np.exp(z)
@@ -37,7 +41,7 @@ def gibbslctm(
         n_dz, n_zc,
         sum_mu_c, #mu_c_dot_mu_c,
         mu_c, sigma_c,
-        mu_prior, sigma_prior
+        mu_prior, sigma_prior,
         alpha_vec, beta,
         token_neighbors,
         consec_sampled_num, max_consec=100,

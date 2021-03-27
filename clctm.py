@@ -9,7 +9,6 @@ import datetime as dt
 from operator import sub as substract
 import time
 import random
-from numba import jit
 from gibbssampler import *
 
 torchtf_avail = True
@@ -37,6 +36,12 @@ try:
     fastrand_avail=True
 except:
     fastrand_avail=False
+
+try:
+    from numba import jit
+    numba_avail=True
+except:
+    numba_avail = False
 
 from random import randrange, shuffle, sample
 from itertools import chain
@@ -588,10 +593,10 @@ class cLCTM:
                 create_neighbor_list()
 
                 gibbslctm(
-                    self.doc_ids,
+                    corpus.doc_ids,
                     self.topics,
                     self.concepts,
-                    self.token_vectors,
+                    corpus.token_vectors,
                     self.n_z, self.n_c,
                     self.n_dz, self.n_zc,
                     self.sum_mu_c,
