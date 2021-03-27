@@ -1,7 +1,11 @@
 import numba as nb
+from numba.typed import List
 from numba import njit, jit
 import numpy as np
 from math import log
+
+import logging
+logging.basicConfig(filename="numbags.log", level=logging.DEBUG)
 
 @njit
 def calc_mu_sigma(
@@ -21,15 +25,49 @@ def calc_mu_sigma(
 
     return mu, sigma
 
-@jit("f8(f8[:])", cache=False, nopython=True, nogil=True, parallel=True)
-def esum(z):
-    return np.sum(np.exp(z))
 
-@jit("f8[:](f8[:])", cache=False, nopython=True, nogil=True, parallel=True)
-def softmax(z):
-    num = np.exp(z)
-    s = num / esum(z)
-    return s
+@nb.jit(nopython=True)
+def multinomial(weights):
+    """Adapted from https://blog.bruce-hill.com/a-faster-weighted-random-choice
+    by Bruce Hill, original "alias" method by Walker (1974)
+    """
+    N = len(weights)
+    avg = np.sum(weights)/N
+    aliases = List([(1., 0.)]*N)
+    
+    smalls = List()
+    bigs = List()
+    for i, w in enumerate(weights):
+        if w < avg:
+            smalls.append((i, w/avg))
+        else:
+            bigs.append((i, w/avg))
+    #print(smalls, bigs)
+
+    ibg = 0
+    ism = 0
+    big = bigs[0]
+    small = smalls[0]
+    
+    while True:
+        aliases[small[0]] = (small[1], big[0])
+        big = (big[0], big[1] - (1-small[1]))
+        if big[1] < 1:
+            small = big
+            ibg += 1
+            if ibg >= len(bigs): break
+            big = bigs[ibg]
+        else:
+            ism += 1
+            if ism >= len(smalls): break
+            small = smalls[ism]
+
+    r = np.random.random()*N
+    #print(r)
+    i = int(r)
+    odds, alias = aliases[i]
+    #print((i,r-i),odds, alias)
+    return int(alias) if (r-i) > odds else int(i)
 
 #@njit("""
 #(u4[::1],u4[::1],u4[::1],
@@ -62,6 +100,7 @@ def gibbslctm(
     n_dims = wordvectors.shape[1]
 
     for iteration in range(n_iter):
+        print("# Iter", iteration)
         num_z_changed = 0
         num_c_changed = 0
         num_omit = 0
@@ -88,7 +127,8 @@ def gibbslctm(
             p = c1/c2
             p = p/p.sum()
 
-            z_new = np.random.multinomial(1, p).argmax()
+            z_new = multinomial(p)
+
             if z_new != z:
                 num_z_changed +=1
             z = z_new
@@ -125,9 +165,13 @@ def gibbslctm(
                 t1 = -0.5 + n_dims + np.log(sigma_c[n])
                 t2 = -(0.5/sigma_c[n]) * (mu_c_dot_mu_c - 2 /mu_c[n] @ wv)
                 p[n] = np.log(n_zc[z, n] + beta) + t1 + t2
-            p = softmax(p)
 
-            c_new = np.random.multinomial(1,p).argmax()
+            maxp = p.max()    
+            #p = p/p.sum() # Cuz those numbers tend to be super high # Removed to align w/ C implementation
+            p = np.exp(p - maxp) # Now softmax it. Temperature is highest coefficient in the C implementation
+            p = p/p.sum()
+
+            c_new = multinomial(p)
 
             if c != c_new:
                 num_c_changed += 1
@@ -143,6 +187,7 @@ def gibbslctm(
             sum_mu_c[c] += wv
             n_c[c] += 1
             n_zc[z,c] += 1
+
 
             mu_c[c], sigma_c[c] = calc_mu_sigma(
                 noise, n_c[c],
