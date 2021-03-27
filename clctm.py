@@ -593,7 +593,7 @@ class cLCTM:
             for i in range(0, self.n_iter, 5):
                 create_neighbor_list()
 
-                self.topics, self.concepts = gibbslctm(
+                gibbslctm(
                     corpus.doc_ids,
                     self.topics,
                     self.concepts,

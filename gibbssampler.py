@@ -146,7 +146,6 @@ def gibbslctm(
                 sigma_prior, mu_prior,
                 sum_mu_c[c]
             )
-     return topics, concepts
 
 #    return (
 #        topics, concepts, mu_c, sigma_c,
