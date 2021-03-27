@@ -601,7 +601,7 @@ class cLCTM:
                     self.n_dz, self.n_zc,
                     self.sum_mu_c,
                     self.mu_c, self.sigma_c,
-                    self.mu_prior, self.sigma_prior,
+                    self.mu_prior, self.sigma_prior, self.noise
                     self.alpha_vec, self.beta,
                     self.token_neighbors,
                     self.consec_sampled_num,
