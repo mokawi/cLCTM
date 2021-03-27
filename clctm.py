@@ -39,6 +39,7 @@ except:
 
 try:
     from numba import jit
+    from numba.typed import List
     numba_avail=True
 except:
     numba_avail = False
@@ -592,7 +593,7 @@ class cLCTM:
             for i in range(0, self.n_iter, 5):
                 create_neighbor_list()
 
-                gibbslctm(
+                self.topics, self.concepts = gibbslctm(
                     corpus.doc_ids,
                     self.topics,
                     self.concepts,
@@ -601,7 +602,7 @@ class cLCTM:
                     self.n_dz, self.n_zc,
                     self.sum_mu_c,
                     self.mu_c, self.sigma_c,
-                    self.mu_prior, self.sigma_prior, self.noise
+                    self.mu_prior, self.sigma_prior, self.noise,
                     self.alpha_vec, self.beta,
                     self.token_neighbors,
                     self.consec_sampled_num,

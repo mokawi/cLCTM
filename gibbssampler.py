@@ -1,5 +1,5 @@
-import numba
-from numba import njit, jit, objmode
+import numba as nb
+from numba import njit, jit
 import numpy as np
 from math import log
 
@@ -31,7 +31,17 @@ def softmax(z):
     s = num / esum(z)
     return s
 
-@njit
+#@njit("""
+#(u4[::1],u4[::1],u4[::1],
+#f8[:,:],
+#u4[::1], u4[::1],
+#u4[:,:], u4[:,:],
+#f8[:,:], f8[::1], f8[::1],
+#f8[::1], f8, f8,
+#f8[::1], f8,
+#u4[::1], u4, u4, b1, u4)
+#""")
+@jit(nopython=True)
 def gibbslctm(
         doc_ids,
         topics,
@@ -41,7 +51,7 @@ def gibbslctm(
         n_dz, n_zc,
         sum_mu_c, #mu_c_dot_mu_c,
         mu_c, sigma_c,
-        mu_prior, sigma_prior,
+        mu_prior, sigma_prior, noise,
         alpha_vec, beta,
         token_neighbors,
         consec_sampled_num, max_consec=100,
@@ -58,7 +68,7 @@ def gibbslctm(
 
         n_concepts = len(n_c)
 
-        for w in range(doc_ids):
+        for w in range(len(doc_ids)):
             d = doc_ids[w]
             z = topics[w]
             c = concepts[w]
@@ -78,7 +88,7 @@ def gibbslctm(
             p = c1/c2
             p = p/p.sum()
 
-            z_new = np.random.multinomial(1, p=p)
+            z_new = np.random.multinomial(1, p).argmax()
             if z_new != z:
                 num_z_changed +=1
             z = z_new
@@ -136,6 +146,7 @@ def gibbslctm(
                 sigma_prior, mu_prior,
                 sum_mu_c[c]
             )
+     return topics, concepts
 
 #    return (
 #        topics, concepts, mu_c, sigma_c,
