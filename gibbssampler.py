@@ -3,7 +3,6 @@ from numba.typed import List
 from numba import njit, jit
 import numpy as np
 from math import log
-from datetime import datetime as dt
 
 import logging
 logging.basicConfig(filename="numbags.log", level=logging.DEBUG)
