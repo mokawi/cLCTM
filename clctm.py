@@ -514,8 +514,8 @@ class cLCTM:
     def _infer(self, corpus):
         #choicefn = pcgchoice if fastrand_avail else np.random.choice
         
-        def softmax_pp(z):
-            num = np.exp(z)
+        def softmax_lctm(z):
+            num = np.exp(z - z.sum())
             s = num / sum(z)
             return s
 
@@ -559,19 +559,12 @@ class cLCTM:
             return random.choices(list(range(self.n_topics)), weights=p)[0]
 
         #@timefn
-        def softmax_old(v):
-            r = np.exp(v-v.max())
-            # .maxCoeff() effectively seems to be .max()
-            return r/r.sum()
-
-        #@timefn
         def sample_c(i, wvec, z):
-            # TODO: (Maybe) check if derivation checks out? Pretty weird to me.
             nbindices = self.token_neighbors[i]
             t1 = -0.5 * self.n_dims * np.log(self.sigma_c[nbindices])
             t2 = -(0.5 / self.sigma_c[nbindices]) * (self.mu_c_dot_mu_c - 2 * self.mu_c[nbindices] @ wvec)
 
-            prob = softmax(np.log(self.n_zc[z, nbindices] + self.beta) + t1 + t2)
+            prob = softmax_lctm(np.log(self.n_zc[z, nbindices] + self.beta) + t1 + t2)
 
             return random.choices(nbindices, weights=prob)[0]
 

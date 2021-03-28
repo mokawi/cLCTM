@@ -1,6 +1,12 @@
 # cLCTM
-Latent concept topic model (LCTM), but with contextualized word embeddings. Implementation in Python, using PyTorch and Transformers.
 
-Might run alright, but the learning is really slow right now, so probably not a viable solution yet.
+Latent concept topic model (LCTM), but with contextualized word embeddings. Implementation in Python. Token embeddings are learned with Transformers, the Gibbs sampler is optimized for numba (there is also a pure python Gibbs sampler, but it's slow). Uses Faiss to speed up inference and initialization.
 
-Also, probably not a good idea if not running GPU.
+This is a very bares-bones implementation.
+
+To do:
+
+- More details in how it works
+- Functions to retrieve topic top tokens, most similar word/concepts
+- pyLDAvis
+- ...

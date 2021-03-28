@@ -4,8 +4,6 @@ from numba import njit, jit
 import numpy as np
 from math import log
 
-import logging
-logging.basicConfig(filename="numbags.log", level=logging.DEBUG)
 
 @jit(nopython=True, nogil=True)
 def calc_mu_sigma(
@@ -90,7 +88,6 @@ def gibbslctm(
     n_dims = wordvectors.shape[1]
 
     for iteration in range(n_iter):
-        print("# Iter", iteration)
         num_z_changed = 0
         num_c_changed = 0
         num_omit = 0
