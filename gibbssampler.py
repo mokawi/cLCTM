@@ -70,23 +70,6 @@ def multinomial(weights):
     #print((i,r-i),odds, alias)
     return int(alias) if (r-i) > odds else int(i)
 
-@jit(nopython=True, parallel=False, nogil=True)
-def sample_z(n_z, n_zc_c, n_dz_d, beta, alpha_vec, n_concepts)
-    p = (n_zc_c + beta) / (n_z + beta * n_concepts) / (n_dz_d + alpha_vec)
-    p = p/p.sum()
-
-    return np.random.multinomial(1,p).argmax()
-
-#@njit("""
-#(u4[::1],u4[::1],u4[::1],
-#f8[:,:],
-#u4[::1], u4[::1],
-#u4[:,:], u4[:,:],
-#f8[:,:], f8[::1], f8[::1],
-#f8[::1], f8, f8,
-#f8[::1], f8,
-#u4[::1], u4[::1], u4, b1, u4)
-#""")
 @jit(nopython=True)
 def gibbslctm(
         doc_ids,
