@@ -3,11 +3,12 @@ from numba.typed import List
 from numba import njit, jit
 import numpy as np
 from math import log
+from datetime import datetime as dt
 
 import logging
 logging.basicConfig(filename="numbags.log", level=logging.DEBUG)
 
-@njit
+@jit(nopython=True, nogil=True)
 def calc_mu_sigma(
         noise,
         n_c_c,
@@ -26,7 +27,7 @@ def calc_mu_sigma(
     return mu, sigma
 
 
-@nb.jit(nopython=True)
+@jit(nopython=True)
 def multinomial(weights):
     """Adapted from https://blog.bruce-hill.com/a-faster-weighted-random-choice
     by Bruce Hill, original "alias" method by Walker (1974)
@@ -68,6 +69,13 @@ def multinomial(weights):
     odds, alias = aliases[i]
     #print((i,r-i),odds, alias)
     return int(alias) if (r-i) > odds else int(i)
+
+@jit(nopython=True, parallel=False, nogil=True)
+def sample_z(n_z, n_zc_c, n_dz_d, beta, alpha_vec, n_concepts)
+    p = (n_zc_c + beta) / (n_z + beta * n_concepts) / (n_dz_d + alpha_vec)
+    p = p/p.sum()
+
+    return np.random.multinomial(1,p).argmax()
 
 #@njit("""
 #(u4[::1],u4[::1],u4[::1],
@@ -161,14 +169,13 @@ def gibbslctm(
 
             # Sample new concept
             p = np.zeros(len(token_neighbors[d]))
-            for n in token_neighbors[d]:
+            for i,n in enumerate(token_neighbors[d]):
                 t1 = -0.5 + n_dims + np.log(sigma_c[n])
-                t2 = -(0.5/sigma_c[n]) * (mu_c_dot_mu_c - 2 /mu_c[n] @ wv)
-                p[n] = np.log(n_zc[z, n] + beta) + t1 + t2
+                t2 = -(0.5/sigma_c[n]) * (mu_c_dot_mu_c - 2 * mu_c[n] @ wv )
+                p[i] = np.log(n_zc[z, n] + beta) + t1 + t2
 
             maxp = p.max()    
-            #p = p/p.sum() # Cuz those numbers tend to be super high # Removed to align w/ C implementation
-            p = np.exp(p - maxp) # Now softmax it. Temperature is highest coefficient in the C implementation
+            p = np.exp(p - maxp)
             p = p/p.sum()
 
             c_new = multinomial(p)
