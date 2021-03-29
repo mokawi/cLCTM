@@ -156,7 +156,7 @@ class Corpus:
             self.use_cuda = torch.cuda.is_available()
         else:
             self.use_cuda = use_cuda
-        self.cuda_device = cuda_device if cuda_device is not None else 
+        self.cuda_device = cuda_device if cuda_device is not None else 0
         if self.use_cuda:
             self.cvmodel = self.cvmodel.to(f'cuda:{self.cuda_device}')
 
