@@ -317,7 +317,7 @@ class cLCTM:
             concept_vectors=None,
             n_concepts=None,
             n_dims=768,                 # That's the number of dimensions in BERT
-            conceptinitmethod="random",
+            conceptinitmethod="kmeans++",
             alpha=0.1,
             beta=0.01,
             noise=0.5,
@@ -326,7 +326,8 @@ class cLCTM:
             faster_heuristic=True,
             max_consec=100,
             sampling_neighbors=300,     # For sampling concepts
-            profiling=True
+            profiling=True,
+            cuda_device=0
             ):
         self.n_topics = n_topics
         self.n_dims = n_dims
@@ -339,8 +340,10 @@ class cLCTM:
         self.faster = faster_heuristic
         self.max_consec = max_consec
         self.n_iter = n_iter
+        self.conceptinitmethod = conceptinitmethod
 
         self.profiling=profiling
+        self.cuda_device=cuda_device
 
         # set count variables according to preset concept vectors, if that's what we have
         if concept_vectors is not None and n_concepts is None:
@@ -386,11 +389,11 @@ class cLCTM:
         if method == "kmeans++":
             
             if faiss_avail:
-                cfg = faiss.GpuIndexFlatConfig()
-                cfg.device = 0
+                self.index_cfg = faiss.GpuIndexFlatConfig()
+                self.index_cfg.device = self.cuda_device
 
                 # step 1
-                self.concept_index = faiss.GpuIndexFlatL2(faiss.StandardGpuResources(), self.n_dims, cfg)
+                self.concept_index = faiss.GpuIndexFlatL2(faiss.StandardGpuResources(), self.n_dims,self.index_cfg)
                 cvs = [random.randint(0,sampsize)]
                 self.concept_index.add(samp[cvs[0]:cvs[0]+1])
 
@@ -435,7 +438,7 @@ class cLCTM:
         self.alpha_vec = self.alpha * np.ones(self.n_topics)
 
         self.topics = np.random.randint(0, self.n_topics, len(corpus.input_ids))
-        self._init_concept_vectors(corpus, sample_size=int(min(len(corpus.input_ids),max(100, min(1000000, 0.01*len(corpus.input_ids))))))
+        self._init_concept_vectors(corpus, sample_size=int(min(len(corpus.input_ids),max(100, min(1000000, 0.01*len(corpus.input_ids))))), method=self.conceptinitmethod)
 
         #NB: faiss is actually much faster (x18!) than cdist here
         t0 = dt.datetime.now()
@@ -571,7 +574,11 @@ class cLCTM:
 
         #@timefn
         def create_neighbor_list():
+            #TODO: I need to remake the index!!!
             if faiss_avail:
+                self.concept_index.reset()
+                self.concept_index.add(self.mu_c)
+                assert self.concept_index.ntotal == self.n_concepts
                 _, self.token_neighbors = self.concept_index.search(corpus.token_vectors, self.nneighbors)
             else:
                 self.token_neigbors = rankdata(
